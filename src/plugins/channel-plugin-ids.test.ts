@@ -609,12 +609,12 @@ describe("resolveGatewayStartupPluginIds", () => {
 
   it.each([
     [
-      "includes only configured channel plugins at idle startup",
+      "includes configured agent model provider owners at startup",
       createStartupConfig({
         enabledPluginIds: ["voice-call"],
         modelId: "demo-cli/demo-model",
       }),
-      ["demo-channel", "browser", "voice-call", "memory-core"],
+      ["demo-channel", "browser", "demo-provider-plugin", "voice-call", "memory-core"],
     ],
     [
       "keeps bundled startup sidecars with enabledByDefault at idle startup",

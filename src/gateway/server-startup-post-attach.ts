@@ -220,8 +220,10 @@ async function prewarmConfiguredPrimaryModel(params: {
   if (runtime !== "auto" && runtime !== "pi") {
     return;
   }
-  // Keep startup prewarm metadata-only; resolving models can import provider runtimes and block readiness.
-  const { ensureOpenClawModelsJson } = await import("../agents/models-config.js");
+  const [{ ensureOpenClawModelsJson }, { resolveModelAsync }] = await Promise.all([
+    import("../agents/models-config.js"),
+    import("../agents/pi-embedded-runner/model.js"),
+  ]);
   const agentDir = resolveOpenClawAgentDir();
   const workspaceDir =
     params.workspaceDir ?? resolveAgentWorkspaceDir(params.cfg, resolveDefaultAgentId(params.cfg));
@@ -231,6 +233,9 @@ async function prewarmConfiguredPrimaryModel(params: {
       providerDiscoveryProviderIds: [provider],
       providerDiscoveryTimeoutMs: STARTUP_PROVIDER_DISCOVERY_TIMEOUT_MS,
       providerDiscoveryEntriesOnly: true,
+    });
+    await resolveModelAsync(provider, model, agentDir, params.cfg, {
+      skipPiDiscovery: true,
     });
   } catch (err) {
     params.log.warn(`startup model warmup failed for ${provider}/${model}: ${String(err)}`);
@@ -266,7 +271,7 @@ async function prewarmConfiguredPrimaryModelWithTimeout(
   await Promise.race([warmup, timeout]);
 }
 
-function schedulePrimaryModelPrewarm(
+async function prewarmPrimaryModelBeforeChannelStart(
   params: {
     cfg: OpenClawConfig;
     workspaceDir?: string;
@@ -274,11 +279,11 @@ function schedulePrimaryModelPrewarm(
     startupTrace?: GatewayStartupTrace;
   },
   prewarm: typeof prewarmConfiguredPrimaryModel = prewarmConfiguredPrimaryModel,
-): void {
+): Promise<void> {
   if (shouldSkipStartupModelPrewarm()) {
     return;
   }
-  void measureStartup(params.startupTrace, "sidecars.model-prewarm", () =>
+  await measureStartup(params.startupTrace, "sidecars.model-prewarm", () =>
     prewarmConfiguredPrimaryModelWithTimeout(
       {
         cfg: params.cfg,
@@ -287,8 +292,20 @@ function schedulePrimaryModelPrewarm(
       },
       prewarm,
     ),
-  ).catch((err) => {
-    params.log.warn(`startup model warmup failed: ${String(err)}`);
+  );
+}
+
+async function prewarmTtsRuntimeBeforeChannelStart(params: {
+  startupTrace?: GatewayStartupTrace;
+  log: { warn: (msg: string) => void };
+}): Promise<void> {
+  await measureStartup(params.startupTrace, "sidecars.tts-runtime-prewarm", async () => {
+    try {
+      const { prewarmTtsRuntimeFacade } = await import("../tts/tts.js");
+      prewarmTtsRuntimeFacade();
+    } catch (err) {
+      params.log.warn(`startup TTS runtime warmup failed: ${String(err)}`);
+    }
   });
 }
 
@@ -420,7 +437,11 @@ export async function startGatewaySidecars(params: {
   await measureStartup(params.startupTrace, "sidecars.channels", async () => {
     if (!skipChannels) {
       try {
-        schedulePrimaryModelPrewarm(
+        await prewarmTtsRuntimeBeforeChannelStart({
+          log: params.log,
+          startupTrace: params.startupTrace,
+        });
+        await prewarmPrimaryModelBeforeChannelStart(
           {
             cfg: params.cfg,
             workspaceDir: params.defaultWorkspaceDir,
@@ -760,7 +781,8 @@ export async function startGatewayPostAttachRuntime(
 export const __testing = {
   prewarmConfiguredPrimaryModel,
   prewarmConfiguredPrimaryModelWithTimeout,
+  prewarmPrimaryModelBeforeChannelStart,
+  prewarmTtsRuntimeBeforeChannelStart,
   resolveGatewayMemoryStartupPolicy,
-  schedulePrimaryModelPrewarm,
   shouldSkipStartupModelPrewarm,
 };

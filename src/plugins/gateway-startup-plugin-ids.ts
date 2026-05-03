@@ -3,6 +3,7 @@ import {
   listExplicitlyDisabledChannelIdsForConfig,
   listPotentialConfiguredChannelIds,
 } from "../channels/config-presence.js";
+import { collectConfiguredModelRefs } from "../config/model-refs.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import {
   DEFAULT_MEMORY_DREAMING_PLUGIN_ID,
@@ -19,6 +20,10 @@ import {
   normalizeConfiguredSpeechProviderIdForStartup,
 } from "./gateway-startup-speech-providers.js";
 import type { InstalledPluginIndexRecord } from "./installed-plugin-index.js";
+import {
+  isActivatedManifestOwner,
+  passesManifestOwnerBasePolicy,
+} from "./manifest-owner-policy.js";
 import type { PluginManifestRecord, PluginManifestRegistry } from "./manifest-registry.js";
 import {
   isPluginMetadataSnapshotCompatible,
@@ -30,6 +35,7 @@ import {
   normalizePluginsConfigWithRegistry,
 } from "./plugin-registry-contributions.js";
 import type { PluginRegistrySnapshot } from "./plugin-registry-snapshot.js";
+import { resolveOwningPluginIdsForModelRefs } from "./providers.js";
 
 export type GatewayStartupPluginPlan = {
   channelPluginIds: readonly string[];
@@ -123,6 +129,34 @@ function resolveContextEngineSlotStartupPluginId(params: {
     return undefined;
   }
   return normalized;
+}
+
+function canStartConfiguredModelOwnerPlugin(params: {
+  plugin: InstalledPluginIndexRecord;
+  pluginsConfig: ReturnType<typeof normalizePluginsConfigWithRegistry>;
+  rootConfig: OpenClawConfig;
+}): boolean {
+  const ownerPlugin = {
+    id: params.plugin.pluginId,
+    origin: params.plugin.origin,
+    enabledByDefault: params.plugin.enabledByDefault,
+  };
+  if (
+    !passesManifestOwnerBasePolicy({
+      plugin: ownerPlugin,
+      normalizedConfig: params.pluginsConfig,
+    })
+  ) {
+    return false;
+  }
+  if (params.plugin.origin !== "workspace") {
+    return true;
+  }
+  return isActivatedManifestOwner({
+    plugin: ownerPlugin,
+    normalizedConfig: params.pluginsConfig,
+    rootConfig: params.rootConfig,
+  });
 }
 
 function shouldConsiderForGatewayStartup(params: {
@@ -517,6 +551,14 @@ export function resolveGatewayStartupPluginPlanFromRegistry(params: {
     activationSourcePlugins,
     normalizePluginId,
   });
+  const configuredModelOwnerPluginIds = new Set(
+    resolveOwningPluginIdsForModelRefs({
+      models: collectConfiguredModelRefs(activationSourceConfig),
+      config: activationSourceConfig,
+      env: params.env,
+      manifestRegistry: params.manifestRegistry,
+    }),
+  );
   const pluginIds = params.index.plugins
     .filter((plugin) => {
       const manifest = findManifestPlugin(manifestLookup, plugin.pluginId);
@@ -558,6 +600,13 @@ export function resolveGatewayStartupPluginPlanFromRegistry(params: {
         })
       ) {
         return true;
+      }
+      if (configuredModelOwnerPluginIds.has(plugin.pluginId)) {
+        return canStartConfiguredModelOwnerPlugin({
+          plugin,
+          pluginsConfig,
+          rootConfig: params.config,
+        });
       }
       if (
         canStartConfiguredSpeechProviderPlugin({
