@@ -217,6 +217,38 @@ describe("optional media tool factory planning", () => {
     });
   });
 
+  it("does not load capability metadata when explicit model configs decide the plan", () => {
+    const config: OpenClawConfig = {
+      agents: {
+        defaults: {
+          imageGenerationModel: { primary: "image-owner/model" },
+          videoGenerationModel: { primary: "video-owner/model" },
+          musicGenerationModel: { primary: "music-owner/model" },
+          pdfModel: { primary: "media-owner/model" },
+        },
+      },
+    };
+    const loadCapabilitySnapshot = vi.fn<() => Pick<PluginMetadataSnapshot, "index" | "plugins">>(
+      () => {
+        throw new Error("capability metadata should not load for explicit model configs");
+      },
+    );
+
+    expect(
+      __testing.resolveOptionalMediaToolFactoryPlan({
+        config,
+        authStore: createAuthStore(),
+        loadCapabilitySnapshot,
+      }),
+    ).toEqual({
+      imageGenerate: true,
+      videoGenerate: true,
+      musicGenerate: true,
+      pdf: true,
+    });
+    expect(loadCapabilitySnapshot).not.toHaveBeenCalled();
+  });
+
   it("skips tools that the resolved allowlist cannot expose", () => {
     const config: OpenClawConfig = {};
     installSnapshot(config, [

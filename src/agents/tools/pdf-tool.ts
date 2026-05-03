@@ -259,16 +259,6 @@ export function createPdfTool(options?: {
     return null;
   }
 
-  const pdfModelConfig = resolvePdfModelConfigForTool({
-    cfg: options?.config,
-    agentDir,
-    workspaceDir: options?.workspaceDir,
-    authStore: options?.authProfileStore,
-  });
-  if (!pdfModelConfig) {
-    return null;
-  }
-
   const maxBytesMbDefault = (
     options?.config?.agents?.defaults as Record<string, unknown> | undefined
   )?.pdfMaxBytesMb;
@@ -315,6 +305,24 @@ export function createPdfTool(options?: {
         record,
         DEFAULT_PROMPT,
       );
+      const pdfModelConfig = resolvePdfModelConfigForTool({
+        cfg: options?.config,
+        agentDir,
+        workspaceDir: options?.workspaceDir,
+        authStore: options?.authProfileStore,
+      });
+      if (!pdfModelConfig) {
+        return {
+          content: [
+            {
+              type: "text",
+              text: "PDF analysis is unavailable because no PDF or image-capable model is configured with usable auth.",
+            },
+          ],
+          details: { error: "pdf_model_unavailable" },
+        };
+      }
+
       const maxBytesMbRaw = typeof record.maxBytesMb === "number" ? record.maxBytesMb : undefined;
       const maxBytesMb =
         typeof maxBytesMbRaw === "number" && Number.isFinite(maxBytesMbRaw) && maxBytesMbRaw > 0

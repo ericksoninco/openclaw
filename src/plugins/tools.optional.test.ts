@@ -2,6 +2,7 @@ import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vite
 import { resetLogger, setLoggerOverride } from "../logging/logger.js";
 import { loggingState } from "../logging/state.js";
 import { resolveInstalledPluginIndexPolicyHash } from "./installed-plugin-index-policy.js";
+import type { PluginMetadataSnapshot } from "./plugin-metadata-snapshot.types.js";
 
 type MockRegistryToolEntry = {
   pluginId: string;
@@ -33,6 +34,7 @@ let ensureStandalonePluginToolRegistryLoaded: typeof import("./tools.js").ensure
 let buildPluginToolMetadataKey: typeof import("./tools.js").buildPluginToolMetadataKey;
 let resetPluginToolFactoryCache: typeof import("./tools.js").resetPluginToolFactoryCache;
 let pinActivePluginChannelRegistry: typeof import("./runtime.js").pinActivePluginChannelRegistry;
+let pinActivePluginGatewayRuntimeRegistry: typeof import("./runtime.js").pinActivePluginGatewayRuntimeRegistry;
 let resetPluginRuntimeStateForTest: typeof import("./runtime.js").resetPluginRuntimeStateForTest;
 let setActivePluginRegistry: typeof import("./runtime.js").setActivePluginRegistry;
 let clearCurrentPluginMetadataSnapshot: typeof import("./current-plugin-metadata-snapshot.js").clearCurrentPluginMetadataSnapshot;
@@ -70,6 +72,7 @@ function createResolveToolsParams(params?: {
   env?: NodeJS.ProcessEnv;
   suppressNameConflicts?: boolean;
   allowGatewaySubagentBinding?: boolean;
+  loadMetadataSnapshot?: () => PluginMetadataSnapshot;
 }) {
   return {
     context: (params?.context ?? createContext()) as never,
@@ -78,6 +81,7 @@ function createResolveToolsParams(params?: {
     ...(params?.env ? { env: params.env } : {}),
     ...(params?.suppressNameConflicts ? { suppressNameConflicts: true } : {}),
     ...(params?.allowGatewaySubagentBinding ? { allowGatewaySubagentBinding: true } : {}),
+    ...(params?.loadMetadataSnapshot ? { loadMetadataSnapshot: params.loadMetadataSnapshot } : {}),
   };
 }
 
@@ -263,62 +267,65 @@ function installToolManifestSnapshots(params: {
   config: ReturnType<typeof createContext>["config"];
   env?: NodeJS.ProcessEnv;
   plugins: Record<string, unknown>[];
-}) {
+}): PluginMetadataSnapshot {
   const plugins = params.plugins;
-  setCurrentPluginMetadataSnapshot(
-    {
-      policyHash: resolveInstalledPluginIndexPolicyHash(params.config),
-      workspaceDir: "/tmp",
-      index: {
-        version: 1,
-        hostContractVersion: "test",
-        compatRegistryVersion: "test",
-        migrationVersion: 1,
-        policyHash: "test",
-        generatedAtMs: 0,
-        installRecords: {},
-        plugins: plugins.map((plugin) => ({
-          pluginId: String(plugin.id),
-          origin: plugin.origin,
-          enabled: true,
-          enabledByDefault: plugin.enabledByDefault,
-          startup: {
-            sidecar: false,
-            memory: false,
-            deferConfiguredChannelFullLoadUntilAfterListen: false,
-            agentHarnesses: [],
-          },
-          compat: [],
-        })),
-        diagnostics: [],
-      },
-      registryDiagnostics: [],
-      manifestRegistry: { plugins, diagnostics: [] },
-      plugins,
+  const snapshot = {
+    policyHash: resolveInstalledPluginIndexPolicyHash(params.config),
+    workspaceDir: "/tmp",
+    index: {
+      version: 1,
+      hostContractVersion: "test",
+      compatRegistryVersion: "test",
+      migrationVersion: 1,
+      policyHash: "test",
+      generatedAtMs: 0,
+      installRecords: {},
+      plugins: plugins.map((plugin) => ({
+        pluginId: String(plugin.id),
+        origin: plugin.origin,
+        enabled: true,
+        enabledByDefault: plugin.enabledByDefault,
+        startup: {
+          sidecar: false,
+          memory: false,
+          deferConfiguredChannelFullLoadUntilAfterListen: false,
+          agentHarnesses: [],
+        },
+        compat: [],
+      })),
       diagnostics: [],
-      byPluginId: new Map(plugins.map((plugin) => [String(plugin.id), plugin])),
-      normalizePluginId: (id: string) => id,
-      owners: {
-        channels: new Map(),
-        channelConfigs: new Map(),
-        providers: new Map(),
-        modelCatalogProviders: new Map(),
-        cliBackends: new Map(),
-        setupProviders: new Map(),
-        commandAliases: new Map(),
-        contracts: new Map(),
-      },
-      metrics: {
-        registrySnapshotMs: 0,
-        manifestRegistryMs: 0,
-        ownerMapsMs: 0,
-        totalMs: 0,
-        indexPluginCount: plugins.length,
-        manifestPluginCount: plugins.length,
-      },
-    } as never,
-    { config: params.config, env: params.env ?? process.env, workspaceDir: "/tmp" },
-  );
+    },
+    registryDiagnostics: [],
+    manifestRegistry: { plugins, diagnostics: [] },
+    plugins,
+    diagnostics: [],
+    byPluginId: new Map(plugins.map((plugin) => [String(plugin.id), plugin])),
+    normalizePluginId: (id: string) => id,
+    owners: {
+      channels: new Map(),
+      channelConfigs: new Map(),
+      providers: new Map(),
+      modelCatalogProviders: new Map(),
+      cliBackends: new Map(),
+      setupProviders: new Map(),
+      commandAliases: new Map(),
+      contracts: new Map(),
+    },
+    metrics: {
+      registrySnapshotMs: 0,
+      manifestRegistryMs: 0,
+      ownerMapsMs: 0,
+      totalMs: 0,
+      indexPluginCount: plugins.length,
+      manifestPluginCount: plugins.length,
+    },
+  } as unknown as PluginMetadataSnapshot;
+  setCurrentPluginMetadataSnapshot(snapshot, {
+    config: params.config,
+    env: params.env ?? process.env,
+    workspaceDir: "/tmp",
+  });
+  return snapshot;
 }
 
 function createXaiToolManifest() {
@@ -394,8 +401,12 @@ describe("resolvePluginTools optional tools", () => {
       resetPluginToolFactoryCache,
       resolvePluginTools,
     } = await import("./tools.js"));
-    ({ pinActivePluginChannelRegistry, resetPluginRuntimeStateForTest, setActivePluginRegistry } =
-      await import("./runtime.js"));
+    ({
+      pinActivePluginChannelRegistry,
+      pinActivePluginGatewayRuntimeRegistry,
+      resetPluginRuntimeStateForTest,
+      setActivePluginRegistry,
+    } = await import("./runtime.js"));
     ({ clearCurrentPluginMetadataSnapshot, setCurrentPluginMetadataSnapshot } =
       await import("./current-plugin-metadata-snapshot.js"));
   });
@@ -549,6 +560,35 @@ describe("resolvePluginTools optional tools", () => {
         activate: false,
         onlyPluginIds: ["optional-demo"],
         toolDiscovery: true,
+      }),
+    );
+  });
+
+  it("reuses the current manifest registry for plugin auto-enable", () => {
+    const config = createContext().config;
+    const plugin = {
+      id: "optional-demo",
+      origin: "bundled",
+      enabledByDefault: true,
+      channels: [],
+      providers: [],
+      contracts: {
+        tools: ["optional_tool"],
+      },
+    };
+    installToolManifestSnapshot({ config, plugin });
+
+    resolvePluginTools(
+      createResolveToolsParams({
+        toolAllowlist: ["optional_tool"],
+      }),
+    );
+
+    expect(applyPluginAutoEnableMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        manifestRegistry: expect.objectContaining({
+          plugins: expect.arrayContaining([expect.objectContaining({ id: "optional-demo" })]),
+        }),
       }),
     );
   });
@@ -749,6 +789,39 @@ describe("resolvePluginTools optional tools", () => {
     const tools = resolveOptionalDemoTools();
 
     expect(tools).toHaveLength(0);
+  });
+
+  it("uses a caller-owned metadata snapshot loader for plugin tool planning", () => {
+    setOptionalDemoRegistry();
+    const context = createContext();
+    const snapshot = installToolManifestSnapshots({
+      config: context.config,
+      plugins: [
+        {
+          id: "optional-demo",
+          origin: "bundled",
+          enabledByDefault: true,
+          channels: [],
+          providers: [],
+          contracts: {
+            tools: ["optional_tool"],
+          },
+        },
+      ],
+    });
+    clearCurrentPluginMetadataSnapshot();
+    const loadMetadataSnapshot = vi.fn(() => snapshot);
+
+    const tools = resolvePluginTools(
+      createResolveToolsParams({
+        context,
+        toolAllowlist: ["optional_tool"],
+        loadMetadataSnapshot,
+      }),
+    );
+
+    expectResolvedToolNames(tools, ["optional_tool"]);
+    expect(loadMetadataSnapshot).toHaveBeenCalledTimes(1);
   });
 
   it("does not invoke named optional tool factories without a matching allowlist", () => {
@@ -1595,6 +1668,39 @@ describe("resolvePluginTools optional tools", () => {
     const tools = resolvePluginTools(
       createResolveToolsParams({
         toolAllowlist: ["optional_tool"],
+      }),
+    );
+
+    expectResolvedToolNames(tools, ["optional_tool"]);
+    expect(resolveRuntimePluginRegistryMock).not.toHaveBeenCalled();
+    expect(loadOpenClawPluginsMock).not.toHaveBeenCalled();
+  });
+
+  it("reuses the pinned gateway runtime registry after provider runtime loads replace active registry", () => {
+    const gatewayRegistry = createOptionalDemoActiveRegistry();
+    setActivePluginRegistry(
+      gatewayRegistry as never,
+      "gateway-startup",
+      "gateway-bindable",
+      "/tmp",
+    );
+    pinActivePluginGatewayRuntimeRegistry(gatewayRegistry as never);
+    setActivePluginRegistry(
+      {
+        plugins: [],
+        tools: [],
+        diagnostics: [],
+      } as never,
+      "provider-runtime",
+      "default",
+      "/tmp",
+    );
+    resolveRuntimePluginRegistryMock.mockReturnValue(undefined);
+
+    const tools = resolvePluginTools(
+      createResolveToolsParams({
+        toolAllowlist: ["optional_tool"],
+        allowGatewaySubagentBinding: true,
       }),
     );
 

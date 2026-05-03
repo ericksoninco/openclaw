@@ -5,13 +5,18 @@ import { getLoadedRuntimePluginRegistry } from "./active-runtime-registry.js";
 import { applyTestPluginDefaults, normalizePluginsConfig } from "./config-state.js";
 import type { PluginLoadOptions } from "./loader.js";
 import {
-  isManifestPluginAvailableForControlPlane,
   loadManifestContractSnapshot,
+  isManifestPluginAvailableForControlPlane,
+  loadManifestMetadataSnapshot,
 } from "./manifest-contract-eligibility.js";
 import type { PluginManifestRecord } from "./manifest-registry.js";
 import { hasManifestToolAvailability } from "./manifest-tool-availability.js";
-import type { PluginMetadataManifestView } from "./plugin-metadata-snapshot.types.js";
+import type {
+  PluginMetadataManifestView,
+  PluginMetadataSnapshot,
+} from "./plugin-metadata-snapshot.types.js";
 import type { PluginRegistry, PluginToolRegistration } from "./registry-types.js";
+import { getActivePluginGatewayRuntimeRegistry } from "./runtime.js";
 import {
   buildPluginRuntimeLoadOptions,
   resolvePluginRuntimeLoadContext,
@@ -346,6 +351,19 @@ function resolvePluginToolRuntimePluginIds(params: {
   const pluginIds = new Set<string>();
   const allowlist = normalizeAllowlist(params.toolAllowlist);
   const normalizedPlugins = normalizePluginsConfig(params.config?.plugins);
+  for (const entry of getActivePluginGatewayRuntimeRegistry()?.tools ?? []) {
+    const names = entry.names.length > 0 ? entry.names : (entry.declaredNames ?? []);
+    if (
+      pluginToolNamesMatchAllowlist({
+        names,
+        pluginId: entry.pluginId,
+        optional: entry.optional,
+        allowlist,
+      })
+    ) {
+      pluginIds.add(entry.pluginId);
+    }
+  }
   const snapshot =
     params.snapshot ??
     loadManifestContractSnapshot({
@@ -627,6 +645,16 @@ function resolvePluginToolRegistry(params: {
     workspaceDir: params.loadOptions.workspaceDir,
     requiredPluginIds: params.onlyPluginIds,
   };
+  const gatewayRuntimeRegistry = getLoadedRuntimePluginRegistry({
+    env: lookup.env,
+    workspaceDir: lookup.workspaceDir,
+    requiredPluginIds: lookup.requiredPluginIds,
+    surface: "gateway-runtime",
+  });
+  if (registryHasScopedPluginTools(gatewayRuntimeRegistry, params.onlyPluginIds)) {
+    return gatewayRuntimeRegistry;
+  }
+
   const channelRegistry = getLoadedRuntimePluginRegistry({
     ...lookup,
     surface: "channel",
@@ -653,7 +681,7 @@ function resolvePluginToolRegistry(params: {
   if (registryHasScopedPluginTools(standaloneRegistry, params.onlyPluginIds)) {
     return standaloneRegistry;
   }
-  return channelRegistry ?? activeRegistry ?? standaloneRegistry;
+  return gatewayRuntimeRegistry ?? channelRegistry ?? activeRegistry ?? standaloneRegistry;
 }
 
 function registryHasScopedPluginTools(
@@ -678,6 +706,8 @@ function resolvePluginToolLoadState(params: {
   toolAllowlist?: string[];
   allowGatewaySubagentBinding?: boolean;
   hasAuthForProvider?: (providerId: string) => boolean;
+  loadMetadataSnapshot?: () => PluginMetadataSnapshot;
+  metadataSnapshot?: PluginMetadataSnapshot;
   env?: NodeJS.ProcessEnv;
 }):
   | {
@@ -691,10 +721,19 @@ function resolvePluginToolLoadState(params: {
   | undefined {
   const env = params.env ?? process.env;
   const baseConfig = applyTestPluginDefaults(params.context.config ?? {}, env);
+  const metadataSnapshot =
+    params.metadataSnapshot ??
+    params.loadMetadataSnapshot?.() ??
+    loadManifestMetadataSnapshot({
+      config: baseConfig,
+      workspaceDir: params.context.workspaceDir,
+      env,
+    });
   const context = resolvePluginRuntimeLoadContext({
     config: baseConfig,
     env,
     workspaceDir: params.context.workspaceDir,
+    manifestRegistry: metadataSnapshot.manifestRegistry,
   });
   const normalized = normalizePluginsConfig(context.config.plugins);
   if (!normalized.enabled) {
@@ -704,11 +743,7 @@ function resolvePluginToolLoadState(params: {
   const runtimeOptions = params.allowGatewaySubagentBinding
     ? { allowGatewaySubagentBinding: true as const }
     : undefined;
-  const snapshot = loadManifestContractSnapshot({
-    config: context.config,
-    workspaceDir: context.workspaceDir,
-    env,
-  });
+  const snapshot: PluginMetadataManifestView = metadataSnapshot;
   const onlyPluginIds = resolvePluginToolRuntimePluginIds({
     config: context.config,
     availabilityConfig: params.context.runtimeConfig ?? context.config,
@@ -718,6 +753,9 @@ function resolvePluginToolLoadState(params: {
     hasAuthForProvider: params.hasAuthForProvider,
     snapshot,
   });
+  if (onlyPluginIds.length === 0) {
+    return undefined;
+  }
   const loadOptions = buildPluginRuntimeLoadOptions(context, {
     activate: false,
     toolDiscovery: true,
@@ -732,6 +770,8 @@ export function ensureStandalonePluginToolRegistryLoaded(params: {
   toolAllowlist?: string[];
   allowGatewaySubagentBinding?: boolean;
   hasAuthForProvider?: (providerId: string) => boolean;
+  loadMetadataSnapshot?: () => PluginMetadataSnapshot;
+  metadataSnapshot?: PluginMetadataSnapshot;
   env?: NodeJS.ProcessEnv;
 }): void {
   const loadState = resolvePluginToolLoadState(params);
@@ -752,6 +792,8 @@ export function resolvePluginTools(params: {
   suppressNameConflicts?: boolean;
   allowGatewaySubagentBinding?: boolean;
   hasAuthForProvider?: (providerId: string) => boolean;
+  loadMetadataSnapshot?: () => PluginMetadataSnapshot;
+  metadataSnapshot?: PluginMetadataSnapshot;
   env?: NodeJS.ProcessEnv;
 }): AnyAgentTool[] {
   // Fast path: when plugins are effectively disabled, avoid discovery/jiti entirely.
