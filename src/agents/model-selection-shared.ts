@@ -353,7 +353,6 @@ export function buildConfiguredAllowlistKeys(params: {
   );
 }
 
-<<<<<<< HEAD
 export function buildModelAliasIndex(
   params: {
     cfg: OpenClawConfig;
@@ -362,19 +361,13 @@ export function buildModelAliasIndex(
     allowPluginNormalization?: boolean;
   } & ManifestNormalizationContext,
 ): ModelAliasIndex {
-=======
-export function buildModelAliasIndex(params: {
-  cfg: OpenClawConfig;
-  defaultProvider: string;
-  allowManifestNormalization?: boolean;
-  allowPluginNormalization?: boolean;
-}): ModelAliasIndex {
   return cloneModelAliasIndex(
     resolveModelSelectionConfigIndex({
       cfg: params.cfg,
       defaultProvider: params.defaultProvider,
       allowManifestNormalization: params.allowManifestNormalization,
       allowPluginNormalization: params.allowPluginNormalization,
+      manifestPlugins: params.manifestPlugins,
     }).aliasIndex,
   );
 }
@@ -390,12 +383,14 @@ function cloneModelAliasIndex(index: ModelAliasIndex): ModelAliasIndex {
   };
 }
 
-function resolveModelSelectionConfigIndex(params: {
-  cfg: OpenClawConfig | undefined;
-  defaultProvider: string;
-  allowManifestNormalization?: boolean;
-  allowPluginNormalization?: boolean;
-}): ModelSelectionConfigIndex {
+function resolveModelSelectionConfigIndex(
+  params: {
+    cfg: OpenClawConfig | undefined;
+    defaultProvider: string;
+    allowManifestNormalization?: boolean;
+    allowPluginNormalization?: boolean;
+  } & ManifestNormalizationContext,
+): ModelSelectionConfigIndex {
   if (!params.cfg) {
     return {
       aliasIndex: { byAlias: new Map(), byKey: new Map() },
@@ -413,6 +408,7 @@ function resolveModelSelectionConfigIndex(params: {
     defaultProvider: params.defaultProvider,
     allowManifestNormalization: params.allowManifestNormalization ?? null,
     allowPluginNormalization: params.allowPluginNormalization ?? null,
+    manifestPlugins: params.manifestPlugins ?? null,
     providerRuntime:
       params.allowPluginNormalization === false
         ? "disabled"
@@ -428,7 +424,6 @@ function resolveModelSelectionConfigIndex(params: {
   if (cached) {
     return cached;
   }
->>>>>>> 248d5f2818 (perf(reply-path): scope model and auth discovery)
   const byAlias = new Map<string, { alias: string; ref: ModelRef }>();
   const byKey = new Map<string, string[]>();
   const allowlistKeys = new Set<string>();
