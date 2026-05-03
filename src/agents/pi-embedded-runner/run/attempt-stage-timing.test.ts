@@ -1,6 +1,8 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
   createEmbeddedRunStageTracker,
+  emitEmbeddedRunStageSummary,
+  EmbeddedRunStageName,
   formatEmbeddedRunStageSummary,
   shouldWarnEmbeddedRunStageSummary,
 } from "./attempt-stage-timing.js";
@@ -64,6 +66,75 @@ describe("embedded run stage timing", () => {
       }),
     ).toBe(
       "embedded run startup stages: runId=r1 totalMs=80 stages=workspace:25ms@25ms,tools:55ms@80ms",
+    );
+  });
+
+  it("emits normal summaries through the shared debug path", () => {
+    const logger = {
+      isEnabled: (level: "debug" | "trace") => level === "debug",
+      debug: vi.fn(),
+      trace: vi.fn(),
+      warn: vi.fn(),
+    };
+
+    expect(
+      emitEmbeddedRunStageSummary({
+        logger,
+        prefix: "embedded run prep stages: runId=r1",
+        summary: {
+          totalMs: 80,
+          stages: [{ name: EmbeddedRunStageName.modelExecution, durationMs: 55, elapsedMs: 80 }],
+        },
+      }),
+    ).toBe(true);
+    expect(logger.debug).toHaveBeenCalledWith(
+      "embedded run prep stages: runId=r1 totalMs=80 stages=model-execution:55ms@80ms",
+    );
+    expect(logger.trace).not.toHaveBeenCalled();
+    expect(logger.warn).not.toHaveBeenCalled();
+  });
+
+  it("emits slow summaries as warnings", () => {
+    const logger = {
+      isEnabled: vi.fn(() => false),
+      debug: vi.fn(),
+      trace: vi.fn(),
+      warn: vi.fn(),
+    };
+
+    expect(
+      emitEmbeddedRunStageSummary({
+        logger,
+        prefix: "embedded run prep stages: runId=r1",
+        summary: {
+          totalMs: 10,
+          stages: [
+            { name: EmbeddedRunStageName.authResolution, durationMs: 5_000, elapsedMs: 5_000 },
+          ],
+        },
+      }),
+    ).toBe(true);
+    expect(logger.warn).toHaveBeenCalledWith(
+      "embedded run prep stages: runId=r1 totalMs=10 stages=auth-resolution:5000ms@5000ms",
+    );
+    expect(logger.debug).not.toHaveBeenCalled();
+    expect(logger.trace).not.toHaveBeenCalled();
+  });
+
+  it("keeps required reply prep stage names stable", () => {
+    expect(Object.values(EmbeddedRunStageName)).toEqual(
+      expect.arrayContaining([
+        "model-selection",
+        "auth-resolution",
+        "provider-runtime-lookup",
+        "tool-planning",
+        "tool-materialization",
+        "plugin-capability-loading",
+        "workspace-session-prep",
+        "harness-prep",
+        "active-run-registration",
+        "model-execution",
+      ]),
     );
   });
 });
