@@ -1,5 +1,8 @@
 import type { AgentTool } from "@mariozechner/pi-agent-core";
 import type { TSchema } from "typebox";
+import type { PluginTextTransforms } from "../../plugins/cli-backend.types.js";
+import type { PluginMetadataSnapshot } from "../../plugins/plugin-metadata-snapshot.types.js";
+import type { ProviderRuntimePluginHandle } from "../../plugins/provider-hook-runtime.js";
 
 export type AgentRuntimeTransport = "sse" | "websocket" | "auto";
 
@@ -243,12 +246,24 @@ export type AgentRuntimeAuthPlan = {
 export type AgentRuntimePromptPlan = {
   provider: string;
   modelId: string;
+  textTransforms?: PluginTextTransforms;
   resolveSystemPromptContribution(
     context: AgentRuntimeSystemPromptContributionContext,
   ): AgentRuntimeSystemPromptContribution | undefined;
+  transformSystemPrompt(
+    context: AgentRuntimeSystemPromptContributionContext & {
+      systemPrompt: string;
+    },
+  ): string;
+};
+
+export type PreparedOpenClawToolPlanning = {
+  metadataSnapshot?: PluginMetadataSnapshot;
+  loadMetadataSnapshot?: () => PluginMetadataSnapshot;
 };
 
 export type AgentRuntimeToolPlan = {
+  preparedPlanning?: PreparedOpenClawToolPlanning;
   normalize<TSchemaType extends TSchema = TSchema, TResult = unknown>(
     tools: AgentTool<TSchemaType, TResult>[],
     params?: {
@@ -298,6 +313,7 @@ export type AgentRuntimeTransportPlan = {
 
 export type AgentRuntimePlan = {
   resolvedRef: AgentRuntimeResolvedRef;
+  providerRuntimeHandle?: ProviderRuntimePluginHandle;
   auth: AgentRuntimeAuthPlan;
   prompt: AgentRuntimePromptPlan;
   tools: AgentRuntimeToolPlan;
@@ -329,6 +345,7 @@ export type BuildAgentRuntimeDeliveryPlanParams = {
   agentDir?: string;
   provider: string;
   modelId: string;
+  providerRuntimeHandle?: ProviderRuntimePluginHandle;
 };
 
 export type BuildAgentRuntimePlanParams = {
@@ -348,4 +365,5 @@ export type BuildAgentRuntimePlanParams = {
   thinkingLevel?: AgentRuntimeThinkLevel;
   extraParamsOverride?: Record<string, unknown>;
   resolvedTransport?: AgentRuntimeTransport;
+  providerRuntimeHandle?: ProviderRuntimePluginHandle;
 };

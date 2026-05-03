@@ -1,6 +1,16 @@
 import { createParameterFreeTool } from "openclaw/plugin-sdk/agent-runtime-test-contracts";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { resetConfigRuntimeState, setRuntimeConfigSnapshot } from "../../config/config.js";
+import { prepareProviderExtraParams } from "../../plugins/provider-hook-runtime.js";
 import { buildAgentRuntimePlan } from "./build.js";
+
+const manifestMocks = vi.hoisted(() => ({
+  loadManifestMetadataSnapshot: vi.fn(() => ({}) as never),
+}));
+
+vi.mock("../../plugins/manifest-contract-eligibility.js", () => ({
+  loadManifestMetadataSnapshot: manifestMocks.loadManifestMetadataSnapshot,
+}));
 
 vi.mock("../../plugins/provider-hook-runtime.js", () => ({
   __testing: {},
@@ -8,13 +18,52 @@ vi.mock("../../plugins/provider-hook-runtime.js", () => ({
   resolveProviderAuthProfileId: vi.fn(() => undefined),
   resolveProviderExtraParamsForTransport: vi.fn(() => undefined),
   resolveProviderFollowupFallbackRoute: vi.fn(() => undefined),
-  resolveProviderHookPlugin: vi.fn(() => undefined),
   resolveProviderPluginsForHooks: vi.fn(() => []),
   resolveProviderRuntimePlugin: vi.fn(() => undefined),
+  resolveProviderRuntimePluginHandle: vi.fn(() => ({ provider: "openai" })),
   wrapProviderStreamFn: vi.fn(() => undefined),
 }));
 
 describe("AgentRuntimePlan", () => {
+  afterEach(() => {
+    resetConfigRuntimeState();
+    manifestMocks.loadManifestMetadataSnapshot.mockClear();
+  });
+
+  it("defers default transport extra params until they are read", () => {
+    const prepareProviderExtraParamsMock = vi.mocked(prepareProviderExtraParams);
+    prepareProviderExtraParamsMock.mockClear();
+
+    const plan = buildAgentRuntimePlan({
+      provider: "openai",
+      modelId: "gpt-5.4",
+      modelApi: "openai-responses",
+      config: {},
+      workspaceDir: "/tmp/openclaw-runtime-plan",
+      model: {
+        id: "gpt-5.4",
+        name: "GPT-5.4",
+        api: "openai-responses",
+        provider: "openai",
+        reasoning: true,
+        input: ["text"],
+        cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+        contextWindow: 200_000,
+        maxTokens: 8_192,
+      },
+    });
+
+    expect(prepareProviderExtraParamsMock).not.toHaveBeenCalled();
+    expect(plan.transport.extraParams).toMatchObject({
+      parallel_tool_calls: true,
+      text_verbosity: "low",
+      openaiWsWarmup: false,
+    });
+    expect(prepareProviderExtraParamsMock).toHaveBeenCalledTimes(1);
+    void plan.transport.extraParams;
+    expect(prepareProviderExtraParamsMock).toHaveBeenCalledTimes(1);
+  });
+
   it("records resolved model, auth, transport, tool, delivery, and observability policy", () => {
     const plan = buildAgentRuntimePlan({
       provider: "openai",
@@ -113,5 +162,31 @@ describe("AgentRuntimePlan", () => {
     expect(normalized).toHaveLength(1);
     expect(normalized[0]?.name).toBe("ping");
     expect(normalized[0]?.parameters).toBeTypeOf("object");
+  });
+
+  it("plans tool metadata against the runtime source snapshot lazily", () => {
+    const sourceConfig = { channels: { telegram: { botToken: "token" } } };
+    const runtimeConfig = {
+      ...sourceConfig,
+      plugins: { allow: ["telegram"] },
+    };
+    setRuntimeConfigSnapshot(runtimeConfig, sourceConfig);
+
+    const plan = buildAgentRuntimePlan({
+      provider: "openai",
+      modelId: "gpt-5.4",
+      config: runtimeConfig,
+      workspaceDir: "/tmp/openclaw-runtime-plan",
+    });
+
+    expect(manifestMocks.loadManifestMetadataSnapshot).not.toHaveBeenCalled();
+
+    plan.tools.preparedPlanning?.loadMetadataSnapshot?.();
+
+    expect(manifestMocks.loadManifestMetadataSnapshot).toHaveBeenCalledWith({
+      config: sourceConfig,
+      workspaceDir: "/tmp/openclaw-runtime-plan",
+      env: process.env,
+    });
   });
 });
