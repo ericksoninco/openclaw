@@ -39,6 +39,7 @@ openclaw gateway run
 
 ## Security defaults
 
+- When OpenClaw managed proxy mode is active, IRC direct TCP/TLS sockets are blocked by default because IRC is not HTTP and cannot use the managed HTTP proxy automatically. Configure an IRC bouncer/proxy, disable IRC, or set `OPENCLAW_IRC_ALLOW_DIRECT_WITH_MANAGED_PROXY=1` as a break-glass opt-in for direct IRC egress.
 - `channels.irc.dmPolicy` defaults to `"pairing"`.
 - `channels.irc.groupPolicy` defaults to `"allowlist"`.
 - With `groupPolicy="allowlist"`, set `channels.irc.groups` to define allowed channels.
@@ -224,6 +225,7 @@ Disable `register` after the nick is registered to avoid repeated REGISTER attem
 
 Default account supports:
 
+- `OPENCLAW_IRC_ALLOW_DIRECT_WITH_MANAGED_PROXY=1` — break-glass override that allows direct IRC TCP/TLS sockets while managed proxy mode is active. Use only when direct IRC egress is intentionally approved.
 - `IRC_HOST`
 - `IRC_PORT`
 - `IRC_TLS`

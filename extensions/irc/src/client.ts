@@ -9,6 +9,26 @@ import {
 } from "./protocol.js";
 
 const IRC_ERROR_CODES = new Set(["432", "464", "465"]);
+const TRUTHY_ENV = new Set(["1", "true", "yes", "on"]);
+
+function isManagedProxyActive(env: NodeJS.ProcessEnv = process.env): boolean {
+  return env["OPENCLAW_PROXY_ACTIVE"] === "1";
+}
+
+function allowsDirectIrcWithManagedProxy(env: NodeJS.ProcessEnv = process.env): boolean {
+  return TRUTHY_ENV.has((env["OPENCLAW_IRC_ALLOW_DIRECT_WITH_MANAGED_PROXY"] ?? "").toLowerCase());
+}
+
+export function assertIrcDirectSocketAllowed(env: NodeJS.ProcessEnv = process.env): void {
+  if (!isManagedProxyActive(env) || allowsDirectIrcWithManagedProxy(env)) {
+    return;
+  }
+  throw new Error(
+    "IRC direct sockets are disabled while managed proxy mode is active. " +
+      "Configure an IRC proxy/bouncer, disable the IRC channel, or set " +
+      "OPENCLAW_IRC_ALLOW_DIRECT_WITH_MANAGED_PROXY=1 to explicitly allow direct IRC egress.",
+  );
+}
 const IRC_NICK_COLLISION_CODES = new Set(["433", "436"]);
 
 type IrcPrivmsgEvent = {
@@ -129,6 +149,8 @@ export async function connectIrcClient(options: IrcClientOptions): Promise<IrcCl
   if (!options.nick.trim()) {
     throw new Error("IRC nick is required");
   }
+
+  assertIrcDirectSocketAllowed();
 
   const desiredNick = options.nick.trim();
   let currentNick = desiredNick;
