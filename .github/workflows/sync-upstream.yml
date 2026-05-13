@@ -1,0 +1,39 @@
+name: Sync upstream
+
+on:
+  schedule:
+    - cron: "23 10 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: sync-upstream-main
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    if: github.repository == 'ericksoninco/openclaw'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout fork
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+
+      - name: Reset fork to upstream main
+        run: |
+          set -euo pipefail
+          cp .github/workflows/sync-upstream.yml /tmp/sync-upstream.yml
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git remote add upstream https://github.com/openclaw/openclaw.git
+          git fetch upstream main
+          git reset --hard upstream/main
+          mkdir -p .github/workflows
+          cp /tmp/sync-upstream.yml .github/workflows/sync-upstream.yml
+          git add .github/workflows/sync-upstream.yml
+          git commit -m "Add daily upstream sync workflow" -m "Co-authored-by: Copilot <223556219+Copilot@users.noreply.github.com>" || true
+          git push --force-with-lease origin HEAD:main
