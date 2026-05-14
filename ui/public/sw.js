@@ -1,7 +1,9 @@
 // OpenClaw Control – Service Worker
 // Handles offline caching and push notifications.
 
-const CACHE_NAME = "openclaw-control-v1";
+// Bump this when the gateway/client protocol changes so browsers discard
+// stale app-shell HTML and hashed assets from older Control UI builds.
+const CACHE_NAME = "openclaw-control-v2";
 
 // Minimal app-shell files to precache.
 const PRECACHE_URLS = ["./"];
