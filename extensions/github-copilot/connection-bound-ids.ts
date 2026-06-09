@@ -4,6 +4,12 @@ import { createHash } from "node:crypto";
 // that encode upstream connection state. Those IDs are rejected after the
 // connection changes, so normalize them at the provider boundary before send.
 
+// Copilot's `/responses` endpoint hard-caps replay item IDs at 64 characters and
+// rejects anything longer with a `string too long` validation error — even IDs
+// that are already `msg_`/`fc_`-prefixed or otherwise not connection-bound. Any
+// such over-long ID must be collapsed to the stable short form before send.
+const MAX_RESPONSES_ITEM_ID_LENGTH = 64;
+
 function looksLikeConnectionBoundId(id: string): boolean {
   if (id.length < 24) {
     return false;
@@ -42,7 +48,7 @@ export function rewriteCopilotConnectionBoundResponseIds(input: unknown): boolea
     if (item.type === "reasoning") {
       continue;
     }
-    if (looksLikeConnectionBoundId(id)) {
+    if (looksLikeConnectionBoundId(id) || id.length > MAX_RESPONSES_ITEM_ID_LENGTH) {
       item.id = deriveReplacementId(typeof item.type === "string" ? item.type : undefined, id);
       rewrote = true;
     }

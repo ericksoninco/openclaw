@@ -117,7 +117,7 @@ describe("wrapCopilotAnthropicStream", () => {
     expect(baseStreamFn.mock.calls).toEqual([[model, context, options]]);
   });
 
-  it("adds Copilot headers, preserves reasoning IDs, and rewrites message IDs before payload send", () => {
+  it("adds Copilot headers, strips reasoning replay, and rewrites message IDs before payload send", () => {
     const reasoningId = Buffer.from(`reasoning-${"x".repeat(24)}`).toString("base64");
     const messageId = Buffer.from(`message-${"y".repeat(24)}`).toString("base64");
     const payloads: Array<{ input: Array<Record<string, unknown>> }> = [];
@@ -125,8 +125,12 @@ describe("wrapCopilotAnthropicStream", () => {
       const payload = {
         input: [
           { id: reasoningId, type: "reasoning" },
-          { id: messageId, type: "message" },
+          { id: messageId, type: "message", phase: "final_answer" },
         ],
+        include: ["reasoning.encrypted_content"],
+        prompt_cache_key: "session-123",
+        prompt_cache_retention: "24h",
+        store: false,
       };
       options?.onPayload?.(payload, _model);
       payloads.push(payload);
@@ -172,8 +176,13 @@ describe("wrapCopilotAnthropicStream", () => {
       },
       onPayload: options.onPayload,
     });
-    expect(payloads[0]?.input[0]?.id).toBe(reasoningId);
-    expect(payloads[0]?.input[1]?.id).toMatch(/^msg_[a-f0-9]{16}$/);
+    expect(payloads[0]?.input).toHaveLength(1);
+    expect(payloads[0]?.input[0]?.id).toMatch(/^msg_[a-f0-9]{16}$/);
+    expect(payloads[0]?.input[0]).not.toHaveProperty("phase");
+    expect(payloads[0]).not.toHaveProperty("include");
+    expect(payloads[0]).not.toHaveProperty("prompt_cache_key");
+    expect(payloads[0]).not.toHaveProperty("prompt_cache_retention");
+    expect(payloads[0]).not.toHaveProperty("store");
   });
 
   it("rewrites Copilot Responses IDs returned by an existing payload hook", async () => {

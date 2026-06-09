@@ -563,6 +563,61 @@ describe("openai transport stream", () => {
     expect(buildTransportAwareSimpleStreamFn(model)).toBeTypeOf("function");
   });
 
+  it("builds GitHub Copilot responses payloads without OpenAI-only fields or replay-only phase", () => {
+    const model = {
+      id: "gpt-5.5",
+      name: "GPT-5.5",
+      api: "openai-responses",
+      provider: "github-copilot",
+      baseUrl: "https://api.individual.githubcopilot.com",
+      reasoning: true,
+      input: ["text"],
+      cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+      contextWindow: 200000,
+      maxTokens: 8192,
+    } satisfies Model<"openai-responses">;
+
+    const params = buildOpenAIResponsesParams(
+      model,
+      {
+        systemPrompt: "Be concise.",
+        messages: [
+          {
+            role: "assistant",
+            provider: "github-copilot",
+            api: "openai-responses",
+            model: "gpt-5.5",
+            content: [
+              {
+                type: "text",
+                text: "Earlier final answer.",
+                textSignature: JSON.stringify({
+                  v: 1,
+                  id: "msg_previous",
+                  phase: "final_answer",
+                }),
+              },
+            ],
+          },
+          { role: "user", content: "Continue." },
+        ],
+      } as never,
+      { sessionId: "session-123" } as never,
+    );
+
+    expect(params).not.toHaveProperty("store");
+    expect(params).not.toHaveProperty("prompt_cache_key");
+    const replayedMessage = params.input.find(
+      (item) => "type" in item && item.type === "message",
+    ) as Record<string, unknown> | undefined;
+    expect(replayedMessage).toMatchObject({
+      type: "message",
+      id: "msg_previous",
+      role: "assistant",
+    });
+    expect(replayedMessage).not.toHaveProperty("phase");
+  });
+
   it("keeps github-copilot Claude models on the shared Anthropic transport seam", () => {
     const model = attachModelProviderRequestTransport(
       {

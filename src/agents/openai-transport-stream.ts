@@ -23,12 +23,14 @@ import type {
   ResponseReasoningItem,
 } from "openai/resources/responses/responses.js";
 import type { ModelCompatConfig } from "../config/types.models.js";
+import { isTruthyEnvValue } from "../infra/env.js";
 import { redactSensitiveText } from "../logging/redact.js";
 import { createSubsystemLogger } from "../logging/subsystem.js";
 import type { ProviderRuntimeModel } from "../plugins/provider-runtime-model.types.js";
 import { resolveProviderTransportTurnStateWithPlugin } from "../plugins/provider-runtime.js";
 import { buildCopilotDynamicHeaders, hasCopilotVisionInput } from "./copilot-dynamic-headers.js";
 import { createDeepSeekTextFilter } from "./deepseek-text-filter.js";
+import { isFormatFailoverRejectedPayloadDiagnosticEnabled } from "./format-failover-guardrails.js";
 import {
   emitModelTransportDebug,
   resolveModelPayloadDebugMode,
@@ -331,6 +333,14 @@ function stringifyRedactedEvent(value: unknown): string {
   return redacted.length > 2000 ? `${redacted.slice(0, 2000)}…<truncated>` : redacted;
 }
 
+function stringifyFullRedactedPayload(value: unknown): string {
+  try {
+    return redactSensitiveText(JSON.stringify(value), { mode: "tools" });
+  } catch {
+    return "<unserializable>";
+  }
+}
+
 function summarizeResponsesPayload(params: unknown): string {
   if (!params || typeof params !== "object") {
     return "payload=non-object";
@@ -389,6 +399,39 @@ function summarizeOpenAITransportError(error: unknown): string {
     `causeCode=${safeDebugValue(cause?.code)}`,
     `message=${error instanceof Error ? error.message : safeDebugValue(error)}`,
   ].join(" ");
+}
+
+function readErrorStringField(record: Record<string, unknown>, key: string): string | undefined {
+  const value = record[key];
+  return typeof value === "string" ? value : undefined;
+}
+
+function isInvalidRequestBodyError(error: unknown): boolean {
+  if (!error || typeof error !== "object") {
+    return false;
+  }
+  const record = error as Record<string, unknown>;
+  const nestedError =
+    record.error && typeof record.error === "object"
+      ? (record.error as Record<string, unknown>)
+      : undefined;
+  const code =
+    readErrorStringField(record, "code") ?? readErrorStringField(nestedError ?? {}, "code");
+  if (code === "invalid_request_body") {
+    return true;
+  }
+  const message = error instanceof Error ? error.message : readErrorStringField(record, "message");
+  return typeof message === "string" && message.includes("invalid_request_body");
+}
+
+function shouldLogRejectedResponsesPayload(model: Model<Api>, error: unknown): boolean {
+  return (
+    model.provider === "github-copilot" &&
+    isInvalidRequestBodyError(error) &&
+    (resolveModelPayloadDebugMode() === "full-redacted" ||
+      isTruthyEnvValue(process.env.OPENCLAW_DEBUG_REJECTED_MODEL_PAYLOAD) ||
+      isFormatFailoverRejectedPayloadDiagnosticEnabled({ provider: model.provider }))
+  );
 }
 
 export function resolveAzureOpenAIApiVersion(env = process.env): string {
@@ -544,7 +587,9 @@ function convertResponsesMessages(
             ],
             status: "completed",
             ...(msgId ? { id: msgId } : {}),
-            phase: textSignature?.phase,
+            ...(textSignature?.phase && model.provider !== "github-copilot"
+              ? { phase: textSignature.phase }
+              : {}),
           };
           output.push(messageItem as ResponseInputItem);
         } else if (block.type === "toolCall") {
@@ -1326,7 +1371,7 @@ export function buildOpenAIResponsesParams(
     {
       includeSystemPrompt: !isCodexResponses,
       supportsDeveloperRole,
-      replayReasoningItems: true,
+      replayReasoningItems: model.provider !== "github-copilot",
       replayResponsesItemIds: !isNativeCodexResponses,
     },
   );
@@ -1335,6 +1380,7 @@ export function buildOpenAIResponsesParams(
   }
   const cacheRetention = resolveCacheRetention(options?.cacheRetention);
   const payloadPolicy = resolveOpenAIResponsesPayloadPolicy(model, {
+    enablePromptCacheStripping: model.provider === "github-copilot",
     storeMode: "disable",
   });
   const params: OpenAIResponsesRequestParams = {
@@ -1389,7 +1435,9 @@ export function buildOpenAIResponsesParams(
           ...(reasoningEffort === "none" ? {} : { summary: options?.reasoningSummary || "auto" }),
         };
         if (reasoningEffort !== "none") {
-          params.include = ["reasoning.encrypted_content"];
+          if (model.provider !== "github-copilot") {
+            params.include = ["reasoning.encrypted_content"];
+          }
         }
       }
     } else if (model.provider !== "github-copilot") {
@@ -1416,6 +1464,7 @@ export function createAzureOpenAIResponsesTransportStreamFn(): StreamFn {
     const eventStream = createAssistantMessageEventStream();
     const stream = eventStream as unknown as { push(event: unknown): void; end(): void };
     void (async () => {
+      let rejectedPayloadForDebug: unknown;
       const output: MutableAssistantOutput = {
         role: "assistant" as const,
         content: [],
@@ -1467,6 +1516,7 @@ export function createAzureOpenAIResponsesTransportStreamFn(): StreamFn {
           model,
           params as Record<string, unknown>,
         ) as typeof params;
+        rejectedPayloadForDebug = params;
         if (
           (options as { openclawCodeModeToolSurface?: unknown } | undefined)
             ?.openclawCodeModeToolSurface === true
@@ -1504,6 +1554,12 @@ export function createAzureOpenAIResponsesTransportStreamFn(): StreamFn {
         stream.push({ type: "done", reason: output.stopReason as never, message: output as never });
         stream.end();
       } catch (error) {
+        if (shouldLogRejectedResponsesPayload(model, error)) {
+          log.warn(
+            `[responses] rejected_payload provider=${model.provider} api=${model.api} model=${model.id} ` +
+              `error=${summarizeOpenAITransportError(error)} payload=${stringifyFullRedactedPayload(rejectedPayloadForDebug)}`,
+          );
+        }
         log.warn(
           `[responses] error provider=${model.provider} api=${model.api} model=${model.id} ` +
             summarizeOpenAITransportError(error),
@@ -2535,6 +2591,8 @@ export const __testing = {
   processOpenAICompletionsStream,
   processResponsesStream,
   formatModelTransportDebugBaseUrl,
+  isInvalidRequestBodyError,
+  shouldLogRejectedResponsesPayload,
   summarizeResponsesPayload,
   summarizeResponsesTools,
   withResponsesFirstEventTimeout,

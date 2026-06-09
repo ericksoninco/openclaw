@@ -239,8 +239,13 @@ function resolveOpenAIResponsesPayloadCapabilities(
       : promptCacheKeySupport === false
         ? isResponsesApi
         : isResponsesApi && usesExplicitProxyLikeEndpoint;
+  const supportsStoreOverride = readCompatPayloadBoolean(model.compat, "supportsStore");
   const supportsResponsesStoreField =
-    readCompatPayloadBoolean(model.compat, "supportsStore") !== false && isResponsesApi;
+    supportsStoreOverride === true
+      ? isResponsesApi
+      : supportsStoreOverride === false
+        ? false
+        : isResponsesApi && usesKnownNativeOpenAIRoute;
 
   return {
     allowsOpenAIServiceTier:
@@ -347,9 +352,7 @@ export function resolveOpenAIResponsesPayloadPolicy(
     shouldStripPromptCache:
       options.enablePromptCacheStripping === true && capabilities.shouldStripResponsesPromptCache,
     shouldStripStore:
-      explicitStore !== true &&
-      readCompatPayloadBoolean(model.compat, "supportsStore") === false &&
-      isResponsesApi,
+      explicitStore !== true && !capabilities.supportsResponsesStoreField && isResponsesApi,
     useServerCompaction:
       options.enableServerCompaction === true &&
       shouldEnableOpenAIResponsesServerCompaction(

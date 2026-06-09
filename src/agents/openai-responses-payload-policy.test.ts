@@ -84,6 +84,31 @@ describe("openai responses payload policy", () => {
     expect(payload).not.toHaveProperty("prompt_cache_retention");
   });
 
+  it("omits OpenAI-only store and prompt cache fields for GitHub Copilot responses routes", () => {
+    const policy = resolveOpenAIResponsesPayloadPolicy(
+      {
+        api: "openai-responses",
+        provider: "github-copilot",
+        baseUrl: "https://api.individual.githubcopilot.com",
+      },
+      {
+        enablePromptCacheStripping: true,
+        storeMode: "disable",
+      },
+    );
+    const payload = {
+      prompt_cache_key: "session-123",
+      prompt_cache_retention: "24h",
+    } satisfies Record<string, unknown>;
+
+    applyOpenAIResponsesPayloadPolicy(payload, policy);
+
+    expect(policy.explicitStore).toBeUndefined();
+    expect(payload).not.toHaveProperty("store");
+    expect(payload).not.toHaveProperty("prompt_cache_key");
+    expect(payload).not.toHaveProperty("prompt_cache_retention");
+  });
+
   it("keeps disabled reasoning payloads on native OpenAI responses models that support none", () => {
     const payload = {
       reasoning: {

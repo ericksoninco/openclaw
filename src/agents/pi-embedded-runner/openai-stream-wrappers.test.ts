@@ -6,6 +6,7 @@ import {
   createOpenAIAttributionHeadersWrapper,
   createOpenAICompletionsStrictMessageKeysWrapper,
   createOpenAICompletionsToolsCompatWrapper,
+  createOpenAIResponsesContextManagementWrapper,
   createOpenAIThinkingLevelWrapper,
 } from "./openai-stream-wrappers.js";
 
@@ -33,6 +34,13 @@ const openaiModel = {
   api: "openai-responses",
   provider: "openai",
   id: "gpt-5.2",
+} as Model<"openai-responses">;
+
+const githubCopilotResponsesModel = {
+  api: "openai-responses",
+  provider: "github-copilot",
+  id: "gpt-5.5",
+  baseUrl: "https://api.individual.githubcopilot.com",
 } as Model<"openai-responses">;
 
 describe("createOpenAICompletionsToolsCompatWrapper", () => {
@@ -139,6 +147,51 @@ describe("createOpenAICompletionsStrictMessageKeysWrapper", () => {
       { role: "assistant", content: "calling tool" },
       { role: "tool", content: "tool result" },
     ]);
+  });
+});
+
+describe("createOpenAIResponsesContextManagementWrapper", () => {
+  it("sanitizes GitHub Copilot Responses payloads on the pi native stream path", () => {
+    const payloads: Array<Record<string, unknown>> = [];
+    const baseStreamFn: StreamFn = (model, _context, options) => {
+      const payload: Record<string, unknown> = {
+        model: model.id,
+        input: [
+          {
+            type: "reasoning",
+            id: "reasoning_previous",
+            encrypted_content: "opaque",
+          },
+          {
+            type: "message",
+            role: "assistant",
+            id: "msg_previous",
+            phase: "final_answer",
+            content: [{ type: "output_text", text: "Earlier final answer." }],
+          },
+          { role: "user", content: [{ type: "input_text", text: "Continue." }] },
+        ],
+        include: ["reasoning.encrypted_content"],
+        prompt_cache_key: "session-123",
+        prompt_cache_retention: "24h",
+        store: false,
+      };
+      options?.onPayload?.(payload, model);
+      payloads.push(structuredClone(payload));
+      return createAssistantMessageEventStream();
+    };
+
+    const wrapped = createOpenAIResponsesContextManagementWrapper(baseStreamFn, undefined);
+    void wrapped(githubCopilotResponsesModel, { messages: [] }, {});
+
+    expect(payloads[0]).not.toHaveProperty("store");
+    expect(payloads[0]).not.toHaveProperty("prompt_cache_key");
+    expect(payloads[0]).not.toHaveProperty("prompt_cache_retention");
+    expect(payloads[0]).not.toHaveProperty("include");
+    const input = payloads[0]?.input as Array<Record<string, unknown>>;
+    expect(input).toHaveLength(2);
+    expect(input[0]).not.toHaveProperty("phase");
+    expect(input.some((item) => item.type === "reasoning")).toBe(false);
   });
 });
 

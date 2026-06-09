@@ -3,11 +3,13 @@ import type { SimpleStreamOptions } from "@earendil-works/pi-ai";
 import { streamSimple } from "@earendil-works/pi-ai";
 import type { ThinkLevel } from "../../auto-reply/thinking.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
+import { redactSensitiveText } from "../../logging/redact.js";
 import { normalizeOptionalLowercaseString, readStringValue } from "../../shared/string-coerce.js";
 import {
   patchCodexNativeWebSearchPayload,
   resolveCodexNativeSearchActivation,
 } from "../codex-native-web-search-core.js";
+import { isFormatFailoverRejectedPayloadDiagnosticEnabled } from "../format-failover-guardrails.js";
 import {
   flattenCompletionMessagesToStringContent,
   stripCompletionMessagesToRoleContent,
@@ -124,6 +126,58 @@ function shouldStripOpenAICompletionMessageKeys(model: {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value && typeof value === "object" && !Array.isArray(value));
+}
+
+function isGithubCopilotOpenAIResponsesModel(model: {
+  api?: unknown;
+  provider?: unknown;
+}): boolean {
+  return (
+    normalizeOptionalLowercaseString(model.provider) === "github-copilot" &&
+    normalizeOptionalLowercaseString(model.api) === "openai-responses"
+  );
+}
+
+function stripGithubCopilotResponsesReplayFields(payloadObj: Record<string, unknown>): void {
+  if (Array.isArray(payloadObj.include)) {
+    const include = payloadObj.include.filter((item) => item !== "reasoning.encrypted_content");
+    if (include.length === 0) {
+      delete payloadObj.include;
+    } else {
+      payloadObj.include = include;
+    }
+  }
+  const input = payloadObj.input;
+  if (!Array.isArray(input)) {
+    return;
+  }
+  const sanitizedInput = input.filter((item) => !(isRecord(item) && item.type === "reasoning"));
+  payloadObj.input = sanitizedInput;
+  for (const item of sanitizedInput) {
+    if (isRecord(item) && item.type === "message") {
+      delete item.phase;
+    }
+  }
+}
+
+function stringifyFullRedactedPayload(value: unknown): string {
+  try {
+    return redactSensitiveText(JSON.stringify(value), { mode: "tools" });
+  } catch {
+    return "<unserializable>";
+  }
+}
+
+function maybeLogGithubCopilotResponsesPayload(
+  model: { api?: unknown; provider?: unknown },
+  payload: unknown,
+): void {
+  if (
+    isGithubCopilotOpenAIResponsesModel(model) &&
+    isFormatFailoverRejectedPayloadDiagnosticEnabled({ provider: "github-copilot" })
+  ) {
+    log.warn(`github-copilot responses outbound payload=${stringifyFullRedactedPayload(payload)}`);
+  }
 }
 
 function hasResponsesWebSearchTool(tools: unknown): boolean {
@@ -290,7 +344,12 @@ export function createOpenAIResponsesContextManagementWrapper(
       ...options,
       onPayload: (payload) => {
         if (payload && typeof payload === "object") {
-          applyOpenAIResponsesPayloadPolicy(payload as Record<string, unknown>, policy);
+          const payloadObj = payload as Record<string, unknown>;
+          applyOpenAIResponsesPayloadPolicy(payloadObj, policy);
+          if (isGithubCopilotOpenAIResponsesModel(model)) {
+            stripGithubCopilotResponsesReplayFields(payloadObj);
+          }
+          maybeLogGithubCopilotResponsesPayload(model, payloadObj);
         }
         return originalOnPayload?.(payload, model);
       },

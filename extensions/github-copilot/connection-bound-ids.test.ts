@@ -35,6 +35,25 @@ describe("github-copilot connection-bound response IDs", () => {
     expect(input[4]?.id).toMatch(/^msg_[a-f0-9]{16}$/);
   });
 
+  it("collapses over-long IDs even when already prefixed or non-base64", () => {
+    const longPrefixedMessageId = `msg_${"a".repeat(70)}`;
+    const longPrefixedFunctionCallId = `fc_${"b".repeat(70)}`;
+    const longReasoningId = `rs_${"c".repeat(70)}`;
+    const input = [
+      { id: "msg_short", type: "message" },
+      { id: longPrefixedMessageId, type: "message" },
+      { id: longPrefixedFunctionCallId, type: "function_call" },
+      { id: longReasoningId, type: "reasoning" },
+    ];
+
+    expect(rewriteCopilotConnectionBoundResponseIds(input)).toBe(true);
+    expect(input[0]?.id).toBe("msg_short");
+    expect(input[1]?.id).toMatch(/^msg_[a-f0-9]{16}$/);
+    expect(input[2]?.id).toMatch(/^fc_[a-f0-9]{16}$/);
+    // Reasoning IDs stay intact (rewriting them breaks Copilot's server-side lookup).
+    expect(input[3]?.id).toBe(longReasoningId);
+  });
+
   it("preserves reasoning IDs regardless of encrypted_content", () => {
     const withEncrypted = Buffer.from(`reasoning-${"e".repeat(24)}`).toString("base64");
     const withNull = Buffer.from(`reasoning-${"n".repeat(24)}`).toString("base64");
