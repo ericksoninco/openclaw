@@ -3,9 +3,23 @@ import type { OpenClawConfig } from "../../../config/types.openclaw.js";
 import { resolveQueueSettings } from "./settings.js";
 
 describe("resolveQueueSettings", () => {
-  it("defaults inbound channels to steering settings", () => {
+  it("defaults unspecified inbound channels to steering settings", () => {
     expect(resolveQueueSettings({ cfg: {} as OpenClawConfig })).toEqual({
       mode: "steer",
+      debounceMs: 500,
+      cap: 20,
+      dropPolicy: "summarize",
+    });
+  });
+
+  it("defaults Telegram to durable follow-up turns", () => {
+    expect(
+      resolveQueueSettings({
+        cfg: {} as OpenClawConfig,
+        channel: "telegram",
+      }),
+    ).toEqual({
+      mode: "followup",
       debounceMs: 500,
       cap: 20,
       dropPolicy: "summarize",

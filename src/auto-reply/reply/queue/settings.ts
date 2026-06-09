@@ -8,7 +8,17 @@ import {
 import { DEFAULT_QUEUE_CAP, DEFAULT_QUEUE_DEBOUNCE_MS, DEFAULT_QUEUE_DROP } from "./state.js";
 import type { QueueMode, QueueSettings, ResolveQueueSettingsParams } from "./types.js";
 
-function defaultQueueModeForChannel(_channel?: string): QueueMode {
+function defaultQueueModeForChannel(channel?: string): QueueMode {
+  // Telegram inbound delivery is a durable chat surface: users often send a
+  // burst of short follow-up messages while the previous turn is still running.
+  // Steering those messages into the active model call makes the active run feel
+  // responsive, but the steered text is not recorded as a normal user turn in
+  // the session transcript. Default Telegram to follow-up queuing so each
+  // inbound message remains durable session history unless the user explicitly
+  // opts back into /queue steer or configures messages.queue.byChannel.telegram.
+  if (channel === "telegram") {
+    return "followup";
+  }
   return "steer";
 }
 
