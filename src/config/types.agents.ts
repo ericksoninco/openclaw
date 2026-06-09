@@ -13,6 +13,7 @@ import type {
   AgentSandboxConfig,
 } from "./types.agents-shared.js";
 import type { DmScope, HumanDelayConfig, IdentityConfig } from "./types.base.js";
+import type { FailoverConfig } from "./types.failover.js";
 import type { GroupChatConfig } from "./types.messages.js";
 import type { SkillsLimitsConfig } from "./types.skills.js";
 import type { AgentToolsConfig, MemorySearchConfig } from "./types.tools.js";
@@ -88,6 +89,8 @@ export type AgentConfig = {
   /** @deprecated Use agentRuntime. */
   embeddedHarness?: AgentEmbeddedHarnessConfig;
   model?: AgentModelConfig;
+  /** Optional per-agent failover policy overrides. */
+  failover?: FailoverConfig;
   /** Per-model metadata overrides for this agent. */
   models?: Record<string, AgentModelEntryConfig>;
   /** Optional per-agent default thinking level (overrides agents.defaults.thinkingDefault). */

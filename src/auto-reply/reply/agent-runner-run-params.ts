@@ -36,6 +36,7 @@ export function resolveModelFallbackOptions(
     provider: run.provider,
     model: run.model,
     agentDir: run.agentDir,
+    agentId: run.agentId,
     fallbacksOverride: resolveEffectiveModelFallbacks({
       cfg: config,
       agentId: run.agentId,

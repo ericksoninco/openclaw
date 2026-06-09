@@ -138,6 +138,7 @@ export function createCronPromptExecutor(params: {
       sessionId: params.cronSession.sessionEntry.sessionId,
       lane: resolveCronAgentLane(params.lane),
       agentDir: params.agentDir,
+      agentId: params.agentId,
       fallbacksOverride: cronFallbacksOverride,
       run: async (providerOverride, modelOverride, runOptions) => {
         if (params.abortSignal?.aborted) {

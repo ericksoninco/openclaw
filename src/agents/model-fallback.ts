@@ -26,6 +26,12 @@ import {
   shouldPreserveTransientCooldownProbeSlot,
   shouldUseTransientCooldownProbeSlot,
 } from "./failover-policy.js";
+import {
+  isFormatFailoverRejectedPayloadDiagnosticEnabled,
+  recordFormatFailoverRecovered,
+  resetFormatFailoverGuardrailsForTesting,
+  type FormatFailoverGuardrailSnapshot,
+} from "./format-failover-guardrails.js";
 import { LiveSessionModelSwitchError } from "./live-model-switch-error.js";
 import {
   isModelFallbackDecisionLogEnabled,
@@ -51,6 +57,104 @@ type FailoverAttribution = {
   sessionId?: string;
   lane?: string;
 };
+
+type FormatFailoverEventName =
+  | "format_failover_attempt"
+  | "format_failover_recovered"
+  | "format_failover_exhausted";
+
+function providerFamily(candidate: ModelCandidate): string {
+  return candidate.provider;
+}
+
+function sameProviderFamily(a: ModelCandidate, b: ModelCandidate): boolean {
+  return providerFamily(a) === providerFamily(b);
+}
+
+function resolveFormatClassCrossProviderFailoverEnabled(
+  cfg: OpenClawConfig | undefined,
+  agentId?: string,
+): boolean {
+  const agentOverride =
+    agentId === undefined
+      ? undefined
+      : cfg?.agents?.list?.find((agent) => agent.id === agentId)?.failover?.formatClass
+          ?.crossProvider;
+  return agentOverride ?? cfg?.failover?.formatClass?.crossProvider ?? true;
+}
+
+function findNextCrossProviderFamilyCandidate(params: {
+  candidates: ModelCandidate[];
+  currentIndex: number;
+  failedCandidate: ModelCandidate;
+}): { index: number; candidate: ModelCandidate } | null {
+  for (let i = params.currentIndex + 1; i < params.candidates.length; i += 1) {
+    const candidate = params.candidates[i];
+    if (!sameProviderFamily(candidate, params.failedCandidate)) {
+      return { index: i, candidate };
+    }
+  }
+  return null;
+}
+
+function emitFormatFailoverEvent(params: {
+  event: FormatFailoverEventName;
+  runId?: string;
+  sessionId?: string;
+  lane?: string;
+  agentId?: string;
+  from: ModelCandidate;
+  to?: ModelCandidate;
+  reason?: string;
+  exhaustedReason?: string;
+  gateEnabled?: boolean;
+  guardrail?: FormatFailoverGuardrailSnapshot;
+}): void {
+  const diagnosticEnabled =
+    params.guardrail?.diagnosticEnabled ??
+    isFormatFailoverRejectedPayloadDiagnosticEnabled({
+      provider: params.from.provider,
+      agentId: params.agentId,
+    });
+  log.warn("format-class failover", {
+    event: params.event,
+    tags: ["error_handling", "model_fallback", "format_failover"],
+    runId: params.runId,
+    requestId: params.runId,
+    sessionId: params.sessionId,
+    agentId: params.agentId,
+    lane: params.lane,
+    fromProvider: params.from.provider,
+    fromModel: params.from.model,
+    fromProviderFamily: providerFamily(params.from),
+    toProvider: params.to?.provider,
+    toModel: params.to?.model,
+    toProviderFamily: params.to ? providerFamily(params.to) : undefined,
+    reason: params.reason ?? "format",
+    exhaustedReason: params.exhaustedReason,
+    crossProviderEnabled: params.gateEnabled,
+    redactedRejectedPayloadDiagnosticEnabled: diagnosticEnabled,
+    formatFailoverGuardrailKey: params.guardrail?.key,
+    formatFailoverRecoveredCount: params.guardrail?.recoveredCount,
+    firstRecoveredForKey: params.guardrail?.firstRecoveredForKey,
+    autofileBodyConstructionDefectTicket: params.guardrail?.defectTicketAutofiled === true,
+    bodyConstructionDefectTicketId: params.guardrail?.defectTicketId,
+    consoleMessage:
+      `format failover: event=${params.event} from=${sanitizeForLog(params.from.provider)}/${sanitizeForLog(params.from.model)}` +
+      (params.to
+        ? ` to=${sanitizeForLog(params.to.provider)}/${sanitizeForLog(params.to.model)}`
+        : ""),
+  });
+  emitFailoverEvent({
+    sessionId: params.sessionId,
+    lane: params.lane,
+    fromProvider: params.from.provider,
+    fromModel: params.from.model,
+    toProvider: params.to?.provider,
+    toModel: params.to?.model,
+    reason: params.event,
+  });
+}
 
 /**
  * Structured error thrown when all model fallback candidates have been
@@ -549,6 +653,9 @@ function resolveImageFallbackDefaultProvider(cfg: OpenClawConfig | undefined): s
 export const __testing = {
   resolveFallbackCandidates,
   resolveImageFallbackCandidates,
+  resolveFormatClassCrossProviderFailoverEnabled,
+  isFormatFailoverRejectedPayloadDiagnosticEnabled,
+  resetFormatFailoverGuardrailsForTesting,
   resolveCooldownDecision,
   resolveSessionSuspensionReason,
 } as const;
@@ -822,6 +929,7 @@ export async function runWithModelFallback<T>(params: {
   sessionId?: string;
   lane?: string;
   agentDir?: string;
+  agentId?: string;
   /** Optional explicit fallbacks list; when provided (even empty), replaces agents.defaults.model.fallbacks. */
   fallbacksOverride?: string[];
   run: ModelFallbackRunFn<T>;
@@ -874,6 +982,16 @@ export async function runWithModelFallback<T>(params: {
 
   const hasFallbackCandidates = candidates.length > 1;
   const requestedCandidate = candidates[0];
+  const formatCrossProviderFailoverEnabled = resolveFormatClassCrossProviderFailoverEnabled(
+    params.cfg,
+    params.agentId,
+  );
+  let formatFailoverHop:
+    | {
+        primary: ModelCandidate;
+        secondary: ModelCandidate;
+      }
+    | undefined;
 
   for (let i = 0; i < candidates.length; i += 1) {
     const candidate = candidates[i];
@@ -1086,6 +1204,26 @@ export async function runWithModelFallback<T>(params: {
           `Model "${sanitizeForLog(notFoundAttempt.provider)}/${sanitizeForLog(notFoundAttempt.model)}" not found. Fell back to "${sanitizeForLog(candidate.provider)}/${sanitizeForLog(candidate.model)}".`,
         );
       }
+      if (formatFailoverHop && sameModelCandidate(candidate, formatFailoverHop.secondary)) {
+        const guardrail = recordFormatFailoverRecovered({
+          primary: formatFailoverHop.primary,
+          secondary: candidate,
+          agentId: params.agentId,
+          sessionId: params.sessionId,
+          requestId: params.runId,
+        });
+        emitFormatFailoverEvent({
+          event: "format_failover_recovered",
+          runId: params.runId,
+          sessionId: params.sessionId,
+          lane: params.lane,
+          agentId: params.agentId,
+          from: formatFailoverHop.primary,
+          to: candidate,
+          gateEnabled: formatCrossProviderFailoverEnabled,
+          guardrail,
+        });
+      }
       return attemptRun.success;
     }
     const err = attemptRun.error;
@@ -1162,6 +1300,79 @@ export async function runWithModelFallback<T>(params: {
       const isKnownFailover = isFailoverError(normalized);
       if (!isKnownFailover && i === candidates.length - 1) {
         throw err;
+      }
+
+      const described = describeFailoverError(normalized);
+      if (described.reason === "format") {
+        const crossProviderTarget =
+          formatCrossProviderFailoverEnabled && !formatFailoverHop
+            ? findNextCrossProviderFamilyCandidate({
+                candidates,
+                currentIndex: i,
+                failedCandidate: candidate,
+              })
+            : null;
+        const nextCandidate = crossProviderTarget?.candidate;
+        lastError = isKnownFailover ? normalized : err;
+        await observeFailedCandidate({
+          attempts,
+          candidate,
+          error: normalized,
+          runId: params.runId,
+          sessionId: params.sessionId,
+          lane: params.lane,
+          requestedProvider: params.provider,
+          requestedModel: params.model,
+          attempt: i + 1,
+          total: candidates.length,
+          nextCandidate,
+          isPrimary,
+          requestedModelMatched: requestedModel,
+          fallbackConfigured: hasFallbackCandidates,
+        });
+        await params.onError?.({
+          provider: candidate.provider,
+          model: candidate.model,
+          error: isKnownFailover ? normalized : err,
+          attempt: i + 1,
+          total: candidates.length,
+        });
+
+        if (crossProviderTarget) {
+          formatFailoverHop = {
+            primary: candidate,
+            secondary: crossProviderTarget.candidate,
+          };
+          emitFormatFailoverEvent({
+            event: "format_failover_attempt",
+            runId: params.runId,
+            sessionId: params.sessionId,
+            lane: params.lane,
+            agentId: params.agentId,
+            from: candidate,
+            to: crossProviderTarget.candidate,
+            gateEnabled: formatCrossProviderFailoverEnabled,
+          });
+          i = crossProviderTarget.index - 1;
+          continue;
+        }
+
+        emitFormatFailoverEvent({
+          event: "format_failover_exhausted",
+          runId: params.runId,
+          sessionId: params.sessionId,
+          lane: params.lane,
+          agentId: params.agentId,
+          from: formatFailoverHop?.primary ?? candidate,
+          to: formatFailoverHop?.secondary,
+          gateEnabled: formatCrossProviderFailoverEnabled,
+          exhaustedReason: formatFailoverHop
+            ? "secondary_format_failure"
+            : formatCrossProviderFailoverEnabled
+              ? "no_cross_provider_candidate"
+              : "gate_disabled",
+        });
+        break;
       }
 
       lastError = isKnownFailover ? normalized : err;

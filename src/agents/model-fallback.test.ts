@@ -177,6 +177,7 @@ function resetModelFallbackTestState(): void {
   authRuntimeMock.runtime.ensureAuthProfileStore.mockClear();
   authRuntimeMock.runtime.loadAuthProfileStoreForRuntime.mockClear();
   authSourceCheckMock.hasAnyAuthProfileStoreSource.mockReset().mockReturnValue(false);
+  __testing.resetFormatFailoverGuardrailsForTesting();
 }
 
 afterEach(resetModelFallbackTestState);
@@ -572,7 +573,7 @@ describe("runWithModelFallback", () => {
     expect(run).toHaveBeenCalledTimes(1);
   });
 
-  it("keeps raw provider schema errors in fallback summaries", async () => {
+  it("keeps raw provider schema errors when same-provider format retries are suppressed", async () => {
     const cfg = makeCfg({
       agents: {
         defaults: {
@@ -595,24 +596,312 @@ describe("runWithModelFallback", () => {
       }),
     );
 
+    const error = await captureRejection(
+      runWithModelFallback({
+        cfg,
+        provider: "openai",
+        model: "gpt-5.4",
+        run,
+      }),
+    );
+    const failover = requireFailoverError(error);
+    expect(failover.name).toBe("FailoverError");
+    expect(failover.rawError).toContain(rawError);
+    expect(failover.reason).toBe("format");
+    expect(failover.status).toBe(400);
+    expect(run).toHaveBeenCalledTimes(1);
+  });
+
+  it("skips same-family format fallbacks and recovers on one cross-family candidate", async () => {
+    const cfg = makeCfg({
+      agents: {
+        defaults: {
+          model: {
+            primary: "github-copilot/gpt-5.5",
+            fallbacks: [
+              "github-copilot/gpt-5.4",
+              "openai-codex/gpt-5.5",
+              "anthropic/claude-opus-4-6",
+            ],
+          },
+        },
+      },
+    });
+    const warnLogs = createWarnLogCapture("openclaw-format-failover-recovered-test");
+    try {
+      const run = vi.fn().mockImplementation(async (provider: string, model: string) => {
+        if (provider === "github-copilot" && model === "gpt-5.5") {
+          throw new FailoverError("provider rejected payload", {
+            provider,
+            model,
+            reason: "format",
+            status: 400,
+          });
+        }
+        if (provider === "github-copilot" && model === "gpt-5.4") {
+          throw new Error("same-family fallback should not run");
+        }
+        if (provider === "openai-codex" && model === "gpt-5.5") {
+          return "ok";
+        }
+        throw new Error(`unexpected model ${provider}/${model}`);
+      });
+
+      const result = await runWithModelFallback({
+        cfg,
+        provider: "github-copilot",
+        model: "gpt-5.5",
+        runId: "run-format-recovered",
+        agentId: "agent-format",
+        run,
+      });
+
+      expect(result.result).toBe("ok");
+      expect(run.mock.calls.map(([provider, model]) => `${provider}/${model}`)).toEqual([
+        "github-copilot/gpt-5.5",
+        "openai-codex/gpt-5.5",
+      ]);
+      expect(result.attempts).toHaveLength(1);
+      expect(result.attempts[0]).toMatchObject({
+        provider: "github-copilot",
+        model: "gpt-5.5",
+        reason: "format",
+      });
+      expect(
+        __testing.isFormatFailoverRejectedPayloadDiagnosticEnabled({
+          provider: "github-copilot",
+          agentId: "agent-format",
+        }),
+      ).toBe(true);
+      expect(await warnLogs.findText("format_failover_attempt")).toBeTruthy();
+      expect(await warnLogs.findText("format_failover_recovered")).toBeTruthy();
+    } finally {
+      warnLogs.cleanup();
+    }
+  });
+
+  it("autofiles a body-construction defect ticket after three recovered format failovers per provider and agent", async () => {
+    const cfg = makeCfg({
+      agents: {
+        defaults: {
+          model: {
+            primary: "github-copilot/gpt-5.5",
+            fallbacks: ["openai-codex/gpt-5.5"],
+          },
+        },
+      },
+    });
+    const warnLogs = createWarnLogCapture("openclaw-format-failover-guardrail-test");
+    try {
+      for (let attempt = 0; attempt < 3; attempt += 1) {
+        const run = vi
+          .fn()
+          .mockRejectedValueOnce(
+            new FailoverError("provider rejected payload", {
+              provider: "github-copilot",
+              model: "gpt-5.5",
+              reason: "format",
+              status: 400,
+            }),
+          )
+          .mockResolvedValueOnce("ok");
+
+        await runWithModelFallback({
+          cfg,
+          provider: "github-copilot",
+          model: "gpt-5.5",
+          agentId: "agent-format",
+          runId: `run-format-recovered-${attempt}`,
+          run,
+        });
+      }
+
+      expect(
+        __testing.isFormatFailoverRejectedPayloadDiagnosticEnabled({
+          provider: "github-copilot",
+          agentId: "agent-format",
+        }),
+      ).toBe(true);
+      expect(
+        await warnLogs.findText("format-body-defect:github-copilot::agent-format"),
+      ).toBeTruthy();
+    } finally {
+      warnLogs.cleanup();
+    }
+  });
+
+  it("exhausts format failover after a secondary format failure without fan-out", async () => {
+    const cfg = makeCfg({
+      agents: {
+        defaults: {
+          model: {
+            primary: "github-copilot/gpt-5.5",
+            fallbacks: [
+              "github-copilot/gpt-5.4",
+              "openai-codex/gpt-5.5",
+              "anthropic/claude-opus-4-6",
+            ],
+          },
+        },
+      },
+    });
+
+    const run = vi.fn().mockImplementation(async (provider: string, model: string) => {
+      throw new FailoverError(`format rejected ${provider}/${model}`, {
+        provider,
+        model,
+        reason: "format",
+        status: 400,
+      });
+    });
+
     const error = requireFallbackSummaryError(
       await captureRejection(
         runWithModelFallback({
           cfg,
-          provider: "openai",
-          model: "gpt-5.4",
+          provider: "github-copilot",
+          model: "gpt-5.5",
           run,
         }),
       ),
     );
-    expect(error.name).toBe("FallbackSummaryError");
-    expect(error.message).toContain(rawError);
-    const attempt = error.attempts.find((candidate) => candidate.error === rawError);
-    if (!attempt) {
-      throw new Error("expected raw error attempt");
-    }
-    expect(attempt.reason).toBe("format");
-    expect(attempt.status).toBe(400);
+
+    expect(run.mock.calls.map(([provider, model]) => `${provider}/${model}`)).toEqual([
+      "github-copilot/gpt-5.5",
+      "openai-codex/gpt-5.5",
+    ]);
+    expect(error.attempts.map((attempt) => `${attempt.provider}/${attempt.model}`)).toEqual([
+      "github-copilot/gpt-5.5",
+      "openai-codex/gpt-5.5",
+    ]);
+  });
+
+  it("continues normal fallback after the cross-family format hop fails for a non-format reason", async () => {
+    const cfg = makeCfg({
+      agents: {
+        defaults: {
+          model: {
+            primary: "github-copilot/gpt-5.5",
+            fallbacks: [
+              "github-copilot/gpt-5.4",
+              "openai-codex/gpt-5.5",
+              "anthropic/claude-opus-4-6",
+            ],
+          },
+        },
+      },
+    });
+    const run = vi.fn().mockImplementation(async (provider: string, model: string) => {
+      if (provider === "github-copilot" && model === "gpt-5.5") {
+        throw new FailoverError("provider rejected payload", {
+          provider,
+          model,
+          reason: "format",
+          status: 400,
+        });
+      }
+      if (provider === "openai-codex" && model === "gpt-5.5") {
+        throw new FailoverError("rate limited", {
+          provider,
+          model,
+          reason: "rate_limit",
+          status: 429,
+        });
+      }
+      if (provider === "anthropic" && model === "claude-opus-4-6") {
+        return "ok";
+      }
+      throw new Error(`unexpected model ${provider}/${model}`);
+    });
+
+    const result = await runWithModelFallback({
+      cfg,
+      provider: "github-copilot",
+      model: "gpt-5.5",
+      run,
+    });
+
+    expect(result.result).toBe("ok");
+    expect(run.mock.calls.map(([provider, model]) => `${provider}/${model}`)).toEqual([
+      "github-copilot/gpt-5.5",
+      "openai-codex/gpt-5.5",
+      "anthropic/claude-opus-4-6",
+    ]);
+    expect(result.attempts.map((attempt) => attempt.reason)).toEqual(["format", "rate_limit"]);
+  });
+
+  it("does not cross-provider format fail over when the company gate is disabled", async () => {
+    const cfg = makeCfg({
+      failover: { formatClass: { crossProvider: false } },
+      agents: {
+        defaults: {
+          model: {
+            primary: "github-copilot/gpt-5.5",
+            fallbacks: ["openai-codex/gpt-5.5"],
+          },
+        },
+      },
+    });
+    const run = vi.fn().mockRejectedValue(
+      new FailoverError("provider rejected payload", {
+        provider: "github-copilot",
+        model: "gpt-5.5",
+        reason: "format",
+      }),
+    );
+
+    const error = requireFailoverError(
+      await captureRejection(
+        runWithModelFallback({
+          cfg,
+          provider: "github-copilot",
+          model: "gpt-5.5",
+          run,
+        }),
+      ),
+    );
+
+    expect(error.reason).toBe("format");
+    expect(run).toHaveBeenCalledTimes(1);
+  });
+
+  it("lets per-agent format failover override the company gate", async () => {
+    const cfg = makeCfg({
+      failover: { formatClass: { crossProvider: true } },
+      agents: {
+        defaults: {
+          model: {
+            primary: "github-copilot/gpt-5.5",
+            fallbacks: ["openai-codex/gpt-5.5"],
+          },
+        },
+        list: [
+          {
+            id: "strict-agent",
+            failover: { formatClass: { crossProvider: false } },
+          },
+        ],
+      },
+    });
+    const run = vi.fn().mockRejectedValue(
+      new FailoverError("provider rejected payload", {
+        provider: "github-copilot",
+        model: "gpt-5.5",
+        reason: "format",
+      }),
+    );
+
+    await captureRejection(
+      runWithModelFallback({
+        cfg,
+        provider: "github-copilot",
+        model: "gpt-5.5",
+        agentId: "strict-agent",
+        run,
+      }),
+    );
+
+    expect(run).toHaveBeenCalledTimes(1);
   });
 
   it("carries request attribution through exhausted fallback summaries", async () => {
@@ -1295,9 +1584,13 @@ describe("runWithModelFallback", () => {
       });
 
       expect(result.result).toBe("ok");
-      expect(warnSpy).toHaveBeenCalledWith(
-        '[model-fallback] Model "openai/gpt-6" not found. Fell back to "anthropic/claude-haiku-3-5".',
-      );
+      expect(
+        warnSpy.mock.calls.some(([message]) =>
+          String(message).includes(
+            'Model "openai/gpt-6" not found. Fell back to "anthropic/claude-haiku-3-5".',
+          ),
+        ),
+      ).toBe(true);
     } finally {
       warnSpy.mockRestore();
       setLoggerOverride(null);

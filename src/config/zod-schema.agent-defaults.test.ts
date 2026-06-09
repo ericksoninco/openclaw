@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import { validateConfigObject } from "./validation.js";
 import { AgentDefaultsSchema } from "./zod-schema.agent-defaults.js";
 import { AgentEntrySchema } from "./zod-schema.agent-runtime.js";
+import { OpenClawSchema } from "./zod-schema.js";
 
 type SchemaParseResult = {
   success: boolean;
@@ -59,6 +60,39 @@ describe("agent defaults schema", () => {
         },
       }),
       "subagents.delegationMode",
+    );
+  });
+
+  it("accepts format-class failover gates at company and agent scope", () => {
+    expectSchemaSuccess(
+      OpenClawSchema.safeParse({
+        failover: {
+          formatClass: {
+            crossProvider: true,
+          },
+        },
+      }),
+    );
+    expectSchemaSuccess(
+      AgentEntrySchema.safeParse({
+        id: "format-strict-agent",
+        failover: {
+          formatClass: {
+            crossProvider: false,
+          },
+        },
+      }),
+    );
+    expectSchemaFailurePath(
+      AgentEntrySchema.safeParse({
+        id: "format-strict-agent",
+        failover: {
+          formatClass: {
+            crossProvider: "disabled",
+          },
+        },
+      }),
+      "failover.formatClass.crossProvider",
     );
   });
 

@@ -17,6 +17,7 @@ import {
   ToolsMediaSchema,
   TtsConfigSchema,
 } from "./zod-schema.core.js";
+import { FailoverSchema } from "./zod-schema.failover.js";
 import { sensitive } from "./zod-schema.sensitive.js";
 
 export const AgentRunRetriesConfigSchema = z
@@ -919,6 +920,7 @@ export const AgentEntrySchema = z
     agentRuntime: AgentRuntimePolicySchema,
     embeddedHarness: AgentEmbeddedHarnessSchema,
     model: AgentModelSchema.optional(),
+    failover: FailoverSchema,
     models: z
       .record(
         z.string(),

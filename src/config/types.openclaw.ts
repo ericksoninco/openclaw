@@ -14,6 +14,7 @@ import type { CliConfig } from "./types.cli.js";
 import type { CommitmentsConfig } from "./types.commitments.js";
 import type { CrestodianConfig } from "./types.crestodian.js";
 import type { CronConfig } from "./types.cron.js";
+import type { FailoverConfig } from "./types.failover.js";
 import type { DiscoveryConfig, GatewayConfig, TalkConfig } from "./types.gateway.js";
 import type { HooksConfig } from "./types.hooks.js";
 import type { McpConfig } from "./types.mcp.js";
@@ -108,6 +109,7 @@ export type OpenClawConfig = {
   plugins?: PluginsConfig;
   surfaces?: Record<string, SurfaceConfigEntry>;
   models?: ModelsConfig;
+  failover?: FailoverConfig;
   nodeHost?: NodeHostConfig;
   agents?: AgentsConfig;
   tools?: ToolsConfig;
