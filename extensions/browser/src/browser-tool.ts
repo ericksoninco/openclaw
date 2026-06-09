@@ -731,7 +731,7 @@ export function createBrowserTool(opts?: {
           const targetId = readStringParam(params, "targetId");
           const fullPage = Boolean(params.fullPage);
           const ref = readStringParam(params, "ref");
-          const element = readStringParam(params, "element");
+          const element = readStringParam(params, "element") ?? readStringParam(params, "selector");
           const labels = typeof params.labels === "boolean" ? params.labels : undefined;
           const type = params.type === "jpeg" ? "jpeg" : "png";
           const timeoutMs =

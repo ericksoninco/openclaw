@@ -485,6 +485,25 @@ describe("browser control server", () => {
     });
   });
 
+  it("agent contract: screenshot selector is routed as an element crop", async () => {
+    const base = await startServerAndBase();
+
+    const shot = await postJson<{ ok: boolean; path?: string }>(`${base}/screenshot`, {
+      selector: "#right-panel",
+      type: "png",
+      timeoutMs: 3333,
+    });
+
+    expect(shot.ok).toBe(true);
+    expect(typeof shot.path).toBe("string");
+    expectRecordFields(requireMockArg(pwMocks.takeScreenshotViaPlaywright), "screenshot call", {
+      element: "#right-panel",
+      fullPage: false,
+      type: "png",
+      timeoutMs: 3333,
+    });
+  });
+
   it("blocks file chooser traversal / absolute paths outside uploads dir", async () => {
     const base = await startServerAndBase();
 

@@ -715,6 +715,24 @@ describe("browser tool snapshot maxChars", () => {
     expect(opts.timeoutMs).toBe(12_345);
   });
 
+  it("treats screenshot selector as an element-scoped capture on host", async () => {
+    const tool = createBrowserTool();
+    await tool.execute?.("call-1", {
+      action: "screenshot",
+      target: "host",
+      selector: "#right-panel",
+      timeoutMs: 12_345,
+    });
+
+    const opts = lastMockCallArg<{ element?: string; fullPage?: boolean; timeoutMs?: number }>(
+      browserActionsMocks.browserScreenshotAction,
+      1,
+    );
+    expect(opts.element).toBe("#right-panel");
+    expect(opts.fullPage).toBe(false);
+    expect(opts.timeoutMs).toBe(12_345);
+  });
+
   it("passes screenshot timeoutMs through the node browser proxy", async () => {
     mockSingleBrowserProxyNode();
     gatewayMocks.callGatewayTool.mockResolvedValueOnce({
@@ -739,6 +757,30 @@ describe("browser tool snapshot maxChars", () => {
     expect(request.params?.timeoutMs).toBe(12_345);
     expect(body?.targetId).toBe("tab-1");
     expect(body?.timeoutMs).toBe(12_345);
+  });
+
+  it("treats screenshot selector as an element-scoped capture through the node browser proxy", async () => {
+    mockSingleBrowserProxyNode();
+    gatewayMocks.callGatewayTool.mockResolvedValueOnce({
+      ok: true,
+      payload: {
+        result: { ok: true, path: "/tmp/test.png" },
+      },
+    });
+    const tool = createBrowserTool();
+    await tool.execute?.("call-1", {
+      action: "screenshot",
+      target: "node",
+      targetId: "tab-1",
+      selector: "#right-panel",
+      timeoutMs: 12_345,
+    });
+
+    const { request } = lastNodeInvokeCall();
+    const body = request.params?.body as { element?: string; fullPage?: boolean } | undefined;
+    expect(request.params?.path).toBe("/screenshot");
+    expect(body?.element).toBe("#right-panel");
+    expect(body?.fullPage).toBe(false);
   });
 
   it("uses the screenshot default timeout for node browser proxy requests", async () => {

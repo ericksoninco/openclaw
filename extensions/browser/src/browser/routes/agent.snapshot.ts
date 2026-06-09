@@ -344,7 +344,7 @@ export function registerBrowserAgentSnapshotRoutes(
       const targetId = toStringOrEmpty(body.targetId) || undefined;
       const fullPage = toBoolean(body.fullPage) ?? false;
       const ref = toStringOrEmpty(body.ref) || undefined;
-      const element = toStringOrEmpty(body.element) || undefined;
+      const element = toStringOrEmpty(body.element) || toStringOrEmpty(body.selector) || undefined;
       const labels = toBoolean(body.labels) ?? false;
       const type = body.type === "jpeg" ? "jpeg" : "png";
       const timeoutMsRaw = toNumber(body.timeoutMs);
