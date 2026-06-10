@@ -241,6 +241,14 @@ function buildCoreDistEntries(): Record<string, string> {
     "infra/warning-filter": "src/infra/warning-filter.ts",
     "telegram/audit": bundledPluginFile("telegram", "src/audit.ts"),
     "telegram/token": bundledPluginFile("telegram", "src/token.ts"),
+    // The isolated Telegram ingress worker is spawned via
+    // `new Worker(new URL("./telegram-ingress-worker.runtime.js", import.meta.url))`
+    // from a bundled dist-root chunk, so it must resolve at the dist root on a
+    // stable filename rather than the nested plugin output path.
+    "telegram-ingress-worker.runtime": bundledPluginFile(
+      "telegram",
+      "src/telegram-ingress-worker.runtime.ts",
+    ),
     "plugins/build-smoke-entry": "src/plugins/build-smoke-entry.ts",
     "plugins/runtime/index": "src/plugins/runtime/index.ts",
     "llm-slug-generator": "src/hooks/llm-slug-generator.ts",
