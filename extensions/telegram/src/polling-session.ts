@@ -258,6 +258,22 @@ export class TelegramPollingSession {
     }
   }
 
+  async #ensureBotReadyForSpooledUpdates(bot: TelegramBot): Promise<void> {
+    if (this.opts.botInfo) {
+      return;
+    }
+    const init = (bot as { init?: (signal?: AbortSignal) => Promise<unknown> | unknown }).init;
+    if (typeof init !== "function") {
+      return;
+    }
+    const initSignal = this.opts.abortSignal as Parameters<typeof init>[0];
+    await withTelegramApiErrorLogging({
+      operation: "getMe",
+      runtime: this.opts.runtime,
+      fn: async () => await init.call(bot, initSignal),
+    });
+  }
+
   async #drainSpooledUpdates(params: { bot: TelegramBot; spoolDir: string }): Promise<number> {
     let handled = 0;
     const updates = await listTelegramSpooledUpdates({ spoolDir: params.spoolDir, limit: 100 });
@@ -333,6 +349,7 @@ export class TelegramPollingSession {
       void worker.stop();
     };
     this.opts.abortSignal?.addEventListener("abort", stopOnAbort, { once: true });
+    await this.#ensureBotReadyForSpooledUpdates(bot);
     const drainIntervalMs = Math.max(100, Math.floor(ingress.drainIntervalMs ?? 500));
     let drainActive = false;
     const drainOnce = async () => {

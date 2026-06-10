@@ -197,6 +197,7 @@ function createPollingSession(params: {
   stallThresholdMs?: number;
   setStatus?: (patch: Omit<ChannelAccountSnapshot, "accountId">) => void;
   isolatedIngress?: ConstructorParameters<typeof TelegramPollingSession>[0]["isolatedIngress"];
+  botInfo?: ConstructorParameters<typeof TelegramPollingSession>[0]["botInfo"];
 }) {
   return new TelegramPollingSession({
     token: "tok",
@@ -213,6 +214,7 @@ function createPollingSession(params: {
     stallThresholdMs: params.stallThresholdMs,
     setStatus: params.setStatus,
     isolatedIngress: params.isolatedIngress,
+    botInfo: params.botInfo,
     ...(params.createTelegramTransport
       ? { createTelegramTransport: params.createTelegramTransport }
       : {}),
@@ -370,6 +372,126 @@ describe("TelegramPollingSession", () => {
     // Offset confirmation was removed because it could self-conflict with the runner.
     // OpenClaw middleware still skips duplicates using the persisted update offset.
     expect(bot.api.getUpdates).not.toHaveBeenCalled();
+  });
+
+  it("initializes the bot before draining isolated ingress spool when startup probe botInfo is absent", async () => {
+    const abort = new AbortController();
+    const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "openclaw-telegram-spool-"));
+    const init = vi.fn(async () => undefined);
+    const handleUpdate = vi.fn(async () => undefined);
+    const bot = {
+      api: {
+        deleteWebhook: vi.fn(async () => true),
+        config: { use: vi.fn() },
+      },
+      init,
+      handleUpdate,
+      stop: vi.fn(async () => undefined),
+    };
+    createTelegramBotMock.mockReturnValueOnce(bot);
+    await writeTelegramSpooledUpdate({
+      spoolDir: tempDir,
+      update: { update_id: 42, message: { text: "hello" } },
+    });
+    let stopWorker: (() => void) | undefined;
+    const workerDone = new Promise<void>((resolve) => {
+      stopWorker = resolve;
+    });
+    const createWorker = vi.fn(() => ({
+      onMessage: vi.fn(() => () => undefined),
+      stop: vi.fn(async () => {
+        stopWorker?.();
+      }),
+      task: vi.fn(async () => {
+        await workerDone;
+      }),
+    }));
+
+    try {
+      const session = createPollingSession({
+        abortSignal: abort.signal,
+        isolatedIngress: {
+          enabled: true,
+          spoolDir: tempDir,
+          createWorker,
+          drainIntervalMs: 10,
+        },
+      });
+
+      const runPromise = session.runUntilAbort();
+      await vi.waitFor(() => expect(handleUpdate).toHaveBeenCalledTimes(1));
+      abort.abort();
+      await runPromise;
+
+      expect(init).toHaveBeenCalledTimes(1);
+      expect(handleUpdate).toHaveBeenCalledWith({ update_id: 42, message: { text: "hello" } });
+      await expect(fs.readdir(tempDir)).resolves.toEqual([]);
+    } finally {
+      await fs.rm(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  it("skips isolated ingress spool init when startup probe botInfo was provided", async () => {
+    const abort = new AbortController();
+    const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "openclaw-telegram-spool-"));
+    const init = vi.fn(async () => undefined);
+    const handleUpdate = vi.fn(async () => undefined);
+    const bot = {
+      api: {
+        deleteWebhook: vi.fn(async () => true),
+        config: { use: vi.fn() },
+      },
+      init,
+      handleUpdate,
+      stop: vi.fn(async () => undefined),
+    };
+    createTelegramBotMock.mockReturnValueOnce(bot);
+    await writeTelegramSpooledUpdate({
+      spoolDir: tempDir,
+      update: { update_id: 42, message: { text: "hello" } },
+    });
+    let stopWorker: (() => void) | undefined;
+    const workerDone = new Promise<void>((resolve) => {
+      stopWorker = resolve;
+    });
+    const createWorker = vi.fn(() => ({
+      onMessage: vi.fn(() => () => undefined),
+      stop: vi.fn(async () => {
+        stopWorker?.();
+      }),
+      task: vi.fn(async () => {
+        await workerDone;
+      }),
+    }));
+
+    try {
+      const session = createPollingSession({
+        abortSignal: abort.signal,
+        botInfo: {
+          id: 123,
+          is_bot: true,
+          first_name: "OpenClaw",
+          username: "openclaw_bot",
+        },
+        isolatedIngress: {
+          enabled: true,
+          spoolDir: tempDir,
+          createWorker,
+          drainIntervalMs: 10,
+        },
+      });
+
+      const runPromise = session.runUntilAbort();
+      await vi.waitFor(() => expect(handleUpdate).toHaveBeenCalledTimes(1));
+      abort.abort();
+      await runPromise;
+
+      expect(init).not.toHaveBeenCalled();
+      expect(handleUpdate).toHaveBeenCalledWith({ update_id: 42, message: { text: "hello" } });
+      await expect(fs.readdir(tempDir)).resolves.toEqual([]);
+    } finally {
+      await fs.rm(tempDir, { recursive: true, force: true });
+    }
   });
 
   it("drains isolated ingress spool through the main-thread bot without offset watermark skipping", async () => {
